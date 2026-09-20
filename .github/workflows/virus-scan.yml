@@ -1,0 +1,117 @@
+# Virus scan. Run it by hand (Actions > Virus scan > Run workflow) with a release tag, after Prepare release has
+# attached the zip. It downloads the release's zip files, checks them against SHA256SUMS.txt, sends each one to
+# VirusTotal, waits for the result, and adds a "Virus scan" line with the count and a link to the full report as the
+# first item under "Verify this download" in the release's footer. It works on a draft or a published release and
+# changes nothing else.
+# Needs a repository secret VT_API_KEY (a free VirusTotal account's API key). Running Prepare release again removes
+# the line, because the zip may have changed; run Virus scan again after it.
+name: Virus scan
+run-name: Virus scan ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the release to scan (for example v1.3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: virus-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Scan the release files and add the result to the notes
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:VT_API_KEY) { throw 'Add your VirusTotal API key as a repository secret named VT_API_KEY (Settings > Secrets and variables > Actions).' }
+          $tag = '<!-- virus scan -->'
+          $oldSection = '<!-- virus scan: generated below this line -->'
+          $headers = @{ 'x-apikey' = $env:VT_API_KEY }
+
+          $info = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json body,assets 2>&1
+          if ($LASTEXITCODE) { throw "No release with tag $env:TAG was found. ($info)" }
+          $release = ($info -join "`n") | ConvertFrom-Json
+          $zips = @($release.assets | Where-Object { $_.name -like '*.zip' } | ForEach-Object { $_.name })
+          if (-not $zips) { throw "$env:TAG has no zip to scan. Run Prepare release first." }
+
+          $dir = Join-Path $env:RUNNER_TEMP 'scan'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --dir $dir --pattern '*.zip' --pattern 'SHA256SUMS.txt'
+          if ($LASTEXITCODE) { throw "Could not download the files of $env:TAG." }
+          $sumsFile = Join-Path $dir 'SHA256SUMS.txt'
+          $sums = @{}
+          if (Test-Path -LiteralPath $sumsFile) {
+            foreach ($line in Get-Content -LiteralPath $sumsFile) { if ($line -match '^([0-9a-f]{64})\s+\*?(.+)$') { $sums[$Matches[2].Trim()] = $Matches[1] } }
+          }
+
+          $scan = @()
+          foreach ($zip in $zips) {
+            $path = Join-Path $dir $zip
+            $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($sums.ContainsKey($zip) -and $sums[$zip] -ne $sha) { throw "$zip does not match SHA256SUMS.txt; not scanning it." }
+            if ((Get-Item -LiteralPath $path).Length -gt 32MB) { throw "$zip is over 32 MB, VirusTotal's limit for a direct upload." }
+
+            Write-Host "Sending $zip ($sha) to VirusTotal..."
+            $upload = Invoke-RestMethod -Uri 'https://www.virustotal.com/api/v3/files' -Method Post -Headers $headers -Form @{ file = Get-Item -LiteralPath $path }
+            $id = $upload.data.id
+            # The free API allows 4 requests a minute, so check every 30 seconds, for up to 15 minutes.
+            $deadline = (Get-Date).AddMinutes(15)
+            do {
+              Start-Sleep -Seconds 30
+              $analysis = Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/analyses/$id" -Headers $headers
+              $status = $analysis.data.attributes.status
+              Write-Host "  $status"
+            } while ($status -ne 'completed' -and (Get-Date) -lt $deadline)
+            if ($status -ne 'completed') { throw "VirusTotal had not finished $zip after 15 minutes; run Virus scan again later." }
+
+            $stats = $analysis.data.attributes.stats
+            $flagged = [int]$stats.malicious
+            $suspicious = [int]$stats.suspicious
+            $engines = $flagged + $suspicious + [int]$stats.undetected + [int]$stats.harmless
+            $report = "https://www.virustotal.com/gui/file/$sha"
+            $when = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+            $result = "$flagged of $engines engines flagged it"
+            if ($suspicious -gt 0) { $result += ", $suspicious more as suspicious" }
+            $label = if ($zips.Count -gt 1) { "Virus scan ($zip):" } else { 'Virus scan:' }
+            $scan += "- $label $result ([VirusTotal report]($report), $when) $tag"
+            $summary = "${zip}: $result. Report: $report"
+            Write-Host $summary
+            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $summary
+          }
+
+          # Put the scan line first under "Verify this download" (before the SHA-256 line), replacing an earlier scan
+          # and the old separate section; without that list, under the Download line; without either, at the end.
+          $body = "$($release.body)"
+          $at = $body.IndexOf($oldSection)
+          if ($at -ge 0) { $body = $body.Substring(0, $at) }
+          $notesLines = New-Object System.Collections.Generic.List[string]
+          foreach ($line in ($body.TrimEnd() -split "\r?\n")) { if ($line -notmatch [regex]::Escape($tag)) { $notesLines.Add($line) } }
+          # The SHA-256 line may sit inside the Note box ('> - SHA-256:'); the scan line takes the same prefix.
+          $verify = -1
+          $download = -1
+          for ($i = 0; $i -lt $notesLines.Count; $i++) {
+            if ($verify -lt 0 -and $notesLines[$i] -match '^((?:> ?)?)- SHA-256:') { $verify = $i; $prefix = $Matches[1] }
+            if ($download -lt 0 -and $notesLines[$i] -match '^(?:> ?)?(- )?\*\*Download:\*\*') { $download = $i }
+          }
+          if ($verify -ge 0) { $notesLines.InsertRange($verify, [string[]]@($scan | ForEach-Object { "$prefix$_" })) }
+          elseif ($download -ge 0) { $notesLines.InsertRange($download + 1, [string[]]$scan) }
+          else { $notesLines.AddRange([string[]](@('', '---', '') + $scan)) }
+          $notes = (($notesLines -join "`n").Trim()) + "`n"
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          Set-Content -LiteralPath $notesFile -Value $notes
+          gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --notes-file $notesFile | Out-Null
+          if ($LASTEXITCODE) { throw "The scan finished (see the summary) but the release notes could not be edited; paste the report link into them by hand." }

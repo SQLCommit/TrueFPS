@@ -1,0 +1,22 @@
+# Build output (releases carry the DLL, built by GitHub Actions)
+build/
+buildDev/
+dist/
+*.dll
+*.lib
+*.exp
+*.obj
+*.pdb
+*.map
+# Client dumps for the signature tests (never published)
+dumps/
+*.bin
+# Local runs of the release scripts
+/.ashita/
+# Editors and OS
+.vs/
+.vscode/
+*.user
+*.swp
+.DS_Store
+Thumbs.db

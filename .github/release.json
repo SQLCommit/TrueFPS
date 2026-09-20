@@ -1,0 +1,18 @@
+{
+  "name": "TrueFPS",
+  "repository": "SQLCommit/TrueFPS",
+  "dll": "truefps.dll",
+  "buildOutput": "build/Release/truefps.dll",
+  "docsFolder": "truefps",
+  "docs": [
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "BUILD.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "versionFile": "src/truefps.cpp",
+  "versionPattern": "pluginVersion\\s*=\\s*([0-9]+\\.[0-9]+)",
+  "ashitaSdkRef": "4171c74c8ddb2ca2a31654f199e6c1cee40d7256",
+  "ashitaInterface": "4.30"
+}

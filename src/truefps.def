@@ -1,0 +1,5 @@
+LIBRARY truefps
+EXPORTS
+ expCreatePlugin @1
+ expDestroyPlugin @2
+ expGetInterfaceVersion @3

@@ -1,0 +1,185 @@
+# Prepare release. Run it by hand (Actions > Prepare release > Run workflow) after saving a DRAFT release on GitHub
+# whose tag is the version the plugin reports (for example v1.3). (Saving a draft cannot start it: GitHub does not
+# run workflows for draft releases.) It builds that version against the Ashita SDK pinned in .github/release.json
+# and attaches the zip and SHA-256 sums to the draft with a Downloads section under your notes, plus
+# a build attestation. Check the draft, then publish it yourself.
+name: Prepare release
+run-name: Prepare release ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the draft release (for example v1.3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  # Drafts are visible only with write access, so the lookup runs here, in a job that executes no build code.
+  find:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.draft.outputs.commit }}
+    steps:
+      - name: Find the draft release
+        id: draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $info = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isDraft,targetCommitish 2>&1
+          if ($LASTEXITCODE) { throw "No release with tag $env:TAG was found. Save a draft release with that tag first. ($info)" }
+          $release = ($info -join "`n") | ConvertFrom-Json
+          if (-not $release.isDraft) { throw "$env:TAG is already published. Releases are prepared as drafts; publish a new version instead." }
+          $tagSha = gh api "repos/$env:GITHUB_REPOSITORY/commits/tags/$env:TAG" --jq .sha 2>$null
+          if ($LASTEXITCODE) {
+            $target = $release.targetCommitish
+            $commit = gh api "repos/$env:GITHUB_REPOSITORY/commits/$target" --jq .sha
+            if ($LASTEXITCODE) { throw "Could not find the draft's target $target." }
+            Write-Host "Building $target at $commit; the tag $env:TAG will be created there when you publish."
+          } else {
+            $commit = $tagSha
+            Write-Host "The tag $env:TAG already exists; building it ($commit)."
+          }
+          Add-Content $env:GITHUB_OUTPUT "commit=$("$commit".Trim())"
+
+  build:
+    needs: find
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      zip: ${{ steps.package.outputs.zip }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.find.outputs.commit }}
+          persist-credentials: false
+
+      - name: Read the release settings
+        id: cfg
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./.github/scripts/release-tools.ps1
+          $cfg = Get-ReleaseConfig
+          $version = Get-PluginVersion $cfg
+          if ("v$version" -ne $env:TAG) { throw "The tag is $env:TAG, but the plugin reports version $version. Use the tag v$version." }
+          Add-Content $env:GITHUB_OUTPUT "sdk-ref=$($cfg.ashitaSdkRef)"
+          try {
+            $now = Get-AshitaInterfaceAt main
+            if ($now -ne $cfg.ashitaInterface) {
+              Write-Host "::warning::Ashita is now at plugin interface $now; this release is built for $($cfg.ashitaInterface). Update .github/release.json (ashitaSdkRef, ashitaInterface) for the next release."
+            }
+          } catch {
+            Write-Host "::warning::Could not check Ashita's current interface; building with the pinned SDK."
+          }
+
+      - name: Check out the Ashita SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AshitaXI/Ashita-v4beta
+          ref: ${{ steps.cfg.outputs.sdk-ref }}
+          path: .ashita
+          sparse-checkout: |
+            /plugins/sdk/
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check release README conversion
+        shell: pwsh
+        run: ./.github/scripts/test-release-readme.ps1
+
+      - name: Build and package with readable README
+        id: package
+        shell: pwsh
+        env:
+          OUT: ${{ runner.temp }}/release-files
+        run: |
+          . ./.github/scripts/release-tools.ps1
+          $cfg = Get-ReleaseConfig
+          $version = Get-PluginVersion $cfg
+          $dll = Invoke-PluginBuild $cfg -Sdk .ashita/plugins/sdk -Interface $cfg.ashitaInterface
+          $info = Get-BuildInfo -Version $version -Interface $cfg.ashitaInterface -SdkRef $cfg.ashitaSdkRef
+          $zip = New-ReleasePackage $cfg -Dll $dll -Version $version -Interface $cfg.ashitaInterface -BuildInfo $info -OutDir $env:OUT
+          $changes = Get-ChangelogLink $cfg -Version $version -Tag $env:TAG
+          if (-not $changes) { Write-Host "::notice::No changelog heading names version $version, so the notes get no What's new link." }
+          Get-DownloadNotes $cfg -ZipName $zip -Interface $cfg.ashitaInterface -SdkRef $cfg.ashitaSdkRef -OutDir $env:OUT -Changelog $changes | Set-Content (Join-Path $env:OUT 'downloads.md')
+          Add-Content $env:GITHUB_OUTPUT "zip=$zip"
+          Write-Summary "Built $zip from $($info.sourceCommit)."
+
+      - name: Keep the files for the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release-files
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [find, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Get the release tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            /.github/scripts/
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Get the built files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release-files
+
+      - name: Attest the zip
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release-files/*.zip
+
+      - name: Attach the files to the draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.find.outputs.commit }}
+          ZIP: ${{ needs.build.outputs.zip }}
+          FILES: ${{ runner.temp }}/release-files
+        run: |
+          . ./.github/scripts/release-tools.ps1
+          $release = (Invoke-Gh @('release', 'view', $env:TAG, '--repo', $env:GITHUB_REPOSITORY, '--json', 'isDraft,body,assets')) | ConvertFrom-Json
+          if (-not $release.isDraft) { throw "$env:TAG was published while it was being built; nothing was attached." }
+          $files = @((Join-Path $env:FILES $env:ZIP), (Join-Path $env:FILES 'SHA256SUMS.txt'))
+          Invoke-Gh (@('release', 'upload', $env:TAG, '--repo', $env:GITHUB_REPOSITORY, '--clobber') + $files) | Out-Null
+          $notes = Join-ReleaseNotes -Body $release.body -Downloads ((Get-Content (Join-Path $env:FILES 'downloads.md')) -join "`n")
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          Set-Content -LiteralPath $notesFile -Value $notes
+          Invoke-Gh @('release', 'edit', $env:TAG, '--repo', $env:GITHUB_REPOSITORY, '--target', $env:COMMIT, '--notes-file', $notesFile) | Out-Null
+          $after = (Invoke-Gh @('release', 'view', $env:TAG, '--repo', $env:GITHUB_REPOSITORY, '--json', 'assets')) | ConvertFrom-Json
+          $names = @($after.assets | ForEach-Object { $_.name })
+          foreach ($want in @($env:ZIP, 'SHA256SUMS.txt')) { if ($names -notcontains $want) { throw "$want is missing from the draft after uploading." } }
+          $extra = @($names | Where-Object { @($env:ZIP, 'SHA256SUMS.txt') -notcontains $_ })
+          if ($extra) { Write-Host "::warning::The draft also has: $($extra -join ', '). Remove them if they are not meant to ship." }
+          Write-Summary "Draft $env:TAG is ready: $env:ZIP and SHA256SUMS.txt are attached and the tag will point at $env:COMMIT. Check it, then publish it."

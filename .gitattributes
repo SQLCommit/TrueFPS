@@ -1,0 +1,11 @@
+# Line endings: LF in the repository; Windows scripts get CRLF on checkout
+* text=auto
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+# Binary files
+*.png binary
+*.dll binary
