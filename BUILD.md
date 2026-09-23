@@ -38,4 +38,4 @@ The README is read from the revision being packaged. Documentation edits need to
 
 ## Development checks
 
-In the development checkout, `tests\run.cmd` runs checks without the game. It also accepts FFXiMain dump files for signature checks. The public release checkout may omit the development tests; a successful compile does not verify gameplay behavior.
+In the development checkout, `tests\run.cmd` runs checks without the game. It also accepts FFXiMain dump files for signature checks. The public release checkout may omit the development tests; a successful compile does not verify gameplay behaviour.

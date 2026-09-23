@@ -2,7 +2,7 @@
 
 # ![TrueFPS](https://readme-typing-svg.demolab.com/?font=Cinzel&size=48&duration=900&pause=0&color=C49B53&center=true&vCenter=true&repeat=false&width=600&height=78&lines=TrueFPS&letterSpacing=2px&weight=700)
 
-**Play at High FPS and fast cutscene with freeze recovery.**
+**Play at high frame rates, with faster cutscenes and automatic recovery from cutscene freezes.**
 
 [![Final Fantasy XI](https://custom-icon-badges.demolab.com/badge/Final_Fantasy-XI-90703D?style=flat-square&logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAADAFBMVEUAAABAMDBQODhgQDhYQEBQSFBoSEBgSEBoSEhgSEhoSEBoSEBgSFBoSEhoSEBwSDhoSEBoSEhoSEBoSEBwSDhgUFBoUEh4SDh4SEBwUFB4UECASDhoUFhwUEhgWGBwUFB4UEh4UEhgWGBwWFiAUEh4UFBoWGBoYGCIUEiAWFBwYGB4WFiAWFCIWEhwYGB4WFiAWFiAWFiIWFCAYFhwYGiAYFiQWFB4YGh4YGCAYGCQWFiQYFB4aGiIYFiYWFiIYGiIYGCIYFB4aGiQYFiAaGiIYGCYYFiYYFCIaGiQYGCYYFiAaGiQaGCQaGCYYGCgYFCQaGCYaGiYaFiIcGigYFB4cHCQaGCIaGiYaGigaFCYaHCgaFiYaGCIcHCQcGigaGi4YFCAeICoaGCIeHiIeHCgcGCYcHCoaHCgaHCAeICgcGCoaGCwaFigcHCIeHiQeHCYeHCQeHCgcHCwaGiIgICYeHCYeHCwcHCQgIC4aGi4cFiocHigeHCoeGC4cFiYeHi4cFjAaGioeHCQgICYgHigeHiYgICweHi4eGCogHC4cHiweHC4eGCggICggHiYiICYiICwgHCYgIC4eICgiICogIDAeICYiIi4gIDIeHCgiIi4gHDQeGCgiIiwgHi4gHCwiICoiICokICgkIi4gHigkIioiIigkJDAiHjgeHCwiIiokIi4iIC4iHjIiHi4iIDIiHiwkIC4kHiomJCokJDAiICwkIjAkIDAkIDAkIComJCwmIjAkIDIkIC4kIjogIDIkIi4mJCwmJi4mJC4mJDogIiwmJjgkIDQmJC4oKDAoJC4oJjAoJDImJC4oKDokJC4qKDAoJjQmJjwkIjIoJDAoKDokJjQqJjAqKjIqKDIqKDQqKDIsKjIsKjgoJjIsKjQsKjIsLDIsKjQsKjgsKjQuKjIwLjYuLDQuLjosKjYuLDYuLDYuLDguLDYwLjQyMDYyLjoyLjoyMDg0Mjg0Mjg0Mjo0Mjo2NDg2Njw2Mjw2NDw4ODw4ODw6Oj4%2BPD4%2BPg4jpSBAAAAAXRSTlMAQObYZgAAAphJREFUeJxjYMABOubX1XVU4ZB8dv%2FumddPn3%2F%2Bik1BVc%2BVVx9%2B%2Ffn7%2Fd37Hx%2BxKWi4fvPvv99flhzccvLYLSwKGq7fOvbzx4vNU9oWTzm0EFNB5PXHh3p%2Ff7vYNqmtvr6%2BFENB5L7HN%2BZufv%2FlxvLVffVlEydgyG989PDY5i%2BZwRcPblk96WFnAZq8e9btG7t63yV7ZNccvHj64bI1O9EUWB95e6j38SwXL3%2F%2FtFMPP124vQFVXrfgzsnewxdcDP2t%2FLVTfr588eAEiry04%2BFjCzffCpa3MrTSVmuZUnPnzSUUeaOFq3sPP%2FYRdTVUVVbL2%2BzTt%2BfAXiR5Tr55Zyt63y00lClWlFc22dUb27ljBbIBXE33Znm%2FeGJr31ipKK9%2BqDmxb83WHCR5JofebT7Lr86096z0U9TeMjfPp3P7WiR5RvbevOQpW7Qt7Isrk6xWrU4ujJtXi6xfYk1FaN7JVh7z9JXOdt6HUya1dAe5Iylgnr06MfTk%2BvSj6el%2BtmHbeqeevxyji2xB6rIKk8WrDKuv7XeWlJxVOLV1YqqCGJIFboenOx1abKWWe77RSjMlz8Ym3EcYWb7g3tTe3lOW8R6TLSIELZq1tGzCVQSQg3Dhwl7LU92W0yZHxScpt%2Bmph3sESIkhKyid1Lfcx6e8Kzcq3i%2FWUs1jBooFQAWHt%2B2KZeUJbM%2FwjJ%2BVZuKdFibLy4Cq4PQCbVHb9PjzrnFFRblx2gZcKPIMjDePW%2FHwRAQqa66aZKPlra3Pwomm4IGPoKS8c4Sq51QTJSUtS25UC4ARvfScjqQOh7xXvbeWkpyeMRsDOuAUX6TDoaNTH6wsE6vuy4whz8DJKbLdLGFdv4ug6JLZGpjyICX8B%2BbszjcVEjLDlAcA2agImHWK4wMAAAAASUVORK5CYII%3D)](https://www.playonline.com/ff11us/)
 [![Ashita interface 4.30](https://custom-icon-badges.demolab.com/badge/Ashita_Interface-4.30-536B91?style=flat-square&logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAGsklEQVR4nKxXf1CT9xl%2F8uYlgQoEXQyZhhJcqhxER4GmeHaacWttL0zwDsesbvaGzA1qtbc71ul2Z%2BvqfsnuWrubG1A9Zepg0tOeug5bZLGCJhIQKdKABAgSzI83P8mbvG%2Fy7N502PWWkFD6ufv%2BkXyf7%2Ft9vs%2Fz%2BX6%2Bz0MgIixm6PV6fkVp6a6nBCkt%2BalpDdXV1Ws8Hk%2FC6xe1%2BdDQEKGWrjht2LwFTaUa%2FLt8De54TDSt0WjWfiUOjI2N8RobGx%2BjKCrq%2FP59%2Bwou5BdhUNeLvtd%2Fi%2Fc3bsa3ln4ds%2Fhkk9FoTMgBAubBK3vrXnQ5naZvq9W%2F3L17d1FLS0sKy7KP5h9aLBKCYYA%2B9BsI9ejAGwjCLIZBRPBlZrN53m%2FPIabRuXPnxB63o%2FBnr%2B5frr99%2B%2FDBgwf1drvdoNFoiuacyFEoBtsfTLibBwygNY3ClZFhoDEM99lgv0KhCCfiABlr4t13m8sbGhr2T09NgKXzMgw9cMDL9QfX2KzWJrVafVQikaz1%2BXwpxmXpI5TdWuh2u8EeYsMXZz3X1peWHrPZbDyZTIbxHOBFiBAF27dvX3%2F0d4dv0IN3YQUwYOjphswf1IIwORkkEgkIBIKInV6vB7FYDEfefNPZ1Nx8pKCgILukpEQ1NWX2OByOt6qqvt8lk8lmKyoqmKgbxSJHXV3dN2csFqQutyH9QTuyM1MYDzqdjnE6nXjpzGkc6LiEw%2Fc%2Bwfb28wEej3d4cnJyYSSkaRotlmnwIAH8nCeAL1kRL5pQXFxMEiEWnqCmgDc%2BAt%2FIlgM%2F5IVVq1bpZTJZ1DUxHSgpKRn507E%2FmjLylEDKV8fdfA5py74G8vUbIT01FcIhFvoHR%2F3BAJ3V19fHW5ADO3funL0zaPzRL37fMA1JgoQd4MBLXwqhtAwghALIXf14it%2FvJ8VicXSyzScSAwMDUFtbe4PLbygUisuBOYQoO2KAxsNvHHJJpdLqzs5OQaw9Yl5DDj09PcmpqamZEGDh3x9r4aHNCiqVCqRSKbhcLsjMzIy67or2Wujs31omL17uaLhxo%2FuEUqmMrQmxPDMYDKBSFbd7XU7ECQrRQ0dO5%2FV6sWXHARwufA1NV29FImOxWJBl2UcRKCsr%2B2jPnj3LjUYj70u%2FBQzDgFKprDSNjX4hvC6XC99J24zvLdmKo%2B9fR6vVinfu3MHW1taIMz6fD0Ui0R%2BsVmtCb0HMFJAkyYkNcfN6hy%2Fr8eolBPGZKZ8gIPMnz8KSGRqyNz8N%2FCQyIkRrM3MAfAwcbzweLCgouMD9lwii3gLu9Fu%2BW6bisczy%2Btde%2F9gyaXw0p732IYgUSZD98zKwOWyfLxKSgLwwFBcqyZGRkfiiMR8HDAYDb%2BtThbqP3nk7dOb4n91btzzvtVomIynglO7US9uws70twofPEUYm4EX1pm8Nb9iwYd2i6oGhoSF4bl3eBUf%2FbQwxTCTv17WdSHvtGPQ7ccw48Nl1YwOR3x77OP7r4ml84bmNE8uWLT3S3d0dl3zzSnFubi4sX%2Ftk%2FdHTTePhcBDS09NhwzNquD8%2BDW5vAFZmZUNwlgKP0wa9hj74y1%2FPwfk3PgBmhvakC4SsyWSa93rHTcHcLcjPyf1pQ%2F0BDPpdSFEUXtd2Ie2zxxQgv9mMZw7UswKS%2F6vp6enFVURcsblySvTjsWOjsPfFPUAQBGStlALBT%2FqCXTAYANuDT8Excx%2BudnXA2UuX7JJMaS8nVouKwCt1ewu3Cb8TrE4pZ3%2B4qXIe3WXx1ZqXMIlPGjTCZ9wZooz9XC25KA5wGLh7V2CQmSrfE2qrWUnAHGYDUe2CfifkrVOE8pT5%2B3oEg4c2qTd1yOXyuJVQ3AhotVoel8e2tjaisuL5u56Hn%2F7f4VmGRmrKgPapQczPy2vctWuXUKfTLajXiGvAVTKr5FnnbaYedFkGkfbakKHd6HdbkDL3omPiFvqoCezv7w8UFRXVcr3CQhyIWRP%2BL9Rqtfp75eor2ys1ydEteEAK02B80sZu21FdOXTv3oVEM5BQ7X7y5Mmut4%2Bfren9xMySySKw2ii43TcYbj71D2ps3AyIYWADbsgIO0m35cELJpMp0f0Tb820Wi2%2FpqbmZjjEoGPiJqqK1nVVVVXlKBSKCpEo7derFfKmZ59%2BsjeJJF%2BO1Ul9KQ7MDb%2FfDyWqwlPuh8M43PtPFIvFNZxYzYkW14qdOHEiWavVkgvhQMKS6fV6gaYcKbdaW6Hp%2FasTGo3mQ%2B7Jhv8%2B3QqFght04rFfYAq4U2o0GqVQKKwtLy%2FPS1Rq443%2FBAAA%2F%2F%2BWk28F7WDfcAAAAABJRU5ErkJggg%3D%3D)](https://www.ashitaxi.com/)
@@ -43,7 +43,7 @@ Developed with **Ashita v4.3.2.1**, plugin interface **4.30**.
 When high FPS leaves a cutscene actor stuck short of its destination, **smooth mode** detects the stall and increases its movement step to help it continue. Recovery starts after about half a second, so a brief pause can still occur.
 Normal speed is the default. You can exclude targets or pause acceleration during selected menus. Acceleration ends when the cutscene finishes or you zone.
 
-**Note:** All documented freezes should be fix at any speed. If you find one not fix please report it.
+**Note:** All the freezes we know about are handled at any speed. If you find one that is not, please report it.
 
 </dd>
 </dl>
@@ -75,6 +75,8 @@ Normal speed is the default. You can exclude targets or pause acceleration durin
 
 Turning it off can change game speed at custom rates. Some animations still use native timing even with it enabled.
 
+**Works with xicamera:** Load either one first. TrueFPS leaves the camera distance constant xicamera edits untouched, and keeps xicamera's camera jitter removal instead of re-timing it; the rest of the camera stays smooth. A camera rate another tool retunes in the game's own data is followed about once a second, including where TrueFPS has replaced the instruction that read it: TrueFPS keeps its own copy of that rate on the new value, so the retune still takes effect.
+
 </dd>
 </dl>
 
@@ -98,12 +100,12 @@ Turning it off can change game speed at custom rates. Some animations still use 
 ---
 
 <details>
-<summary><strong>FPS counter</strong> — Move or lock the counter, show the longest frame, and choose colors that change with your FPS.</summary>
+<summary><strong>FPS counter</strong> — Move or lock the counter, show the longest frame, and choose colours that change with your FPS.</summary>
 
 <dl>
 <dd>
 
-**Colour threshold** uses three configurable colors, separated by thresholds of 30 and 60 FPS by default.
+**Colour threshold** uses three configurable colours, separated by thresholds of 30 and 60 FPS by default.
 
 </dd>
 </dl>
@@ -142,7 +144,11 @@ Breakdowns separate game logic, rendering, addons and plugins, GPU and driver ti
 
 ---
 
-**After a client update, check Routines Tab for unavailable features. The FPS counter, Frames tab, and captures still work if the game build is unrecognized.**
+**After a client update, check Routines Tab for unavailable features. The FPS counter, Frames tab, and captures still work if the game build is unrecognised.**
+
+**Compatibility:** Retail: every routine. HorizonXI: every routine but the hold bar, which that client does not have; the
+Routines tab shows it dim as not in this client. On a retail client, which has the hold-time window, a hold bar whose code is not found
+is reported as a failure, not as absent.
 
 ## ![Commands](https://readme-typing-svg.demolab.com/?font=Cinzel&size=25&duration=1&pause=0&color=638EBD&center=false&vCenter=true&repeat=false&width=600&height=42&lines=Commands&letterSpacing=0.5px&weight=700)
 
@@ -158,7 +164,7 @@ Breakdowns separate game logic, rendering, addons and plugins, GPU and driver ti
 | `/truefps overlay on` / `off` | Show or hide the FPS counter |
 | `/truefps overlay lock on` / `off` | Lock or unlock counter dragging |
 | `/truefps overlay detail on` / `off` | Show or hide the longest-frame readout |
-| `/truefps overlay bands on` / `off` | Enable or disable FPS-based counter colors |
+| `/truefps overlay bands on` / `off` | Enable or disable FPS-based counter colours |
 | `/truefps frames` | Summarize the last 10 seconds |
 | `/truefps frames save` | Export all retained frames to CSV |
 | `/truefps diag` | Write a diagnostic report to the log |

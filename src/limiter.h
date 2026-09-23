@@ -132,13 +132,19 @@ inline float nativeEase(uint32_t kBits, double s) {
     return float(-std::expm1((s / kNativeStep) * std::log(r)) / s);
 }
 inline uint32_t bitsOf(float f) { uint32_t b = 0; std::memcpy(&b, &f, 4); return b; }
+// A "fraction of the way per tick" factor k applied once per iteration instead of once per tick: 1 - (1 - k)^sig.
+// The camera factor calls push k at the call, so the value found in the client's code is the one converted here.
+inline float perIterationK(uint32_t kBits, bool one, double sig) {
+    const double k = double(floatFromBits(kBits));
+    return one ? float(k) : float(1.0 - std::pow(1.0 - k, sig));
+}
 
 struct FrameValues {
     double s = 1.0, sig = 1.0;
     float phiBefore = 0.0f;
     int32_t w = 1, n = 1;
     bool one = true;
-    float f025 = 0.25f, f0125 = 0.125f, f005 = floatFromBits(kBits005), f05 = 0.5f, sigma = 1.0f, q075 = 0.75f, p025 = 0.25f;
+    float f025 = 0.25f, f0125 = 0.125f, f05 = 0.5f, sigma = 1.0f, q075 = 0.75f, p025 = 0.25f;
 // The movement deadband, 0.01 units per frame scaled to the step (0.01 * walkScale, never above the client's own 0.01).
     float f001 = floatFromBits(kBits001);
     float f00001 = floatFromBits(kBits00001);   // the 0.0001 displacement gates
@@ -171,7 +177,6 @@ inline FrameValues nextFrame(double& carry, float realTicks, float speed) {
     if (!v.one) {
         v.f025 = float(1.0 - std::pow(0.75, v.sig));
         v.f0125 = float(1.0 - std::pow(0.875, v.sig));
-        v.f005 = float(1.0 - std::pow(1.0 - double(floatFromBits(kBits005)), v.sig));
         v.f05 = float(1.0 - std::pow(0.5, v.sig));
         v.sigma = float(v.sig);
     }
@@ -265,7 +270,6 @@ struct State {
     uintptr_t sleepTarget = 0;    // the loop's `mov ebp, [imm32]` now reads this slot
     bool waiting = true;          // Release clears it: preciseSleep becomes Sleep
     float lastFrameTicks = 0.0f;  // ticks the last frame took, at the timer reset
-    bool spreadTicks = true;
     TickSpreader spreader;
     bool smoothStep = false;      // the step on smooth mode's clock (set at Present)
     bool frameSmooth = false;
@@ -292,7 +296,33 @@ inline float g_truefpsMoveTicks = 0.0f;       // real or whole ticks (State::mov
 
 // The slots the patched client code and the stubs read: per-iteration easing factors, scaled thresholds and per-native-frame pacing.
 inline uint8_t g_truefpsOne = 1;                      // sig == 1: every factor stub takes its original instruction
-inline float g_truefpsF025 = 0.25f, g_truefpsF0125 = 0.125f, g_truefpsF005 = floatFromBits(kBits005), g_truefpsF05 = 0.5f;
+// No stub reads these three: the patched client code reads F025 and F05, and the cells below follow F0125.
+inline float g_truefpsF025 = 0.25f, g_truefpsF0125 = 0.125f, g_truefpsF05 = 0.5f;
+// An operand another tool can save and write back after truefps has unloaded must stay valid, so the two camera push
+// multipliers and the three actor render positions are swapped to cells in a page that outlives the module
+// (smooth.h), not to the globals here. A cell is not tied to any one constant: allocatePersistentCells points each
+// one at the slot its rows would otherwise have been swapped to, so a site on another constant needs no more than its
+// row. Rows that name one client constant in one routine share a cell, as they share that constant in the client: a
+// tool that saves one of those operands and writes it back into all of them (xicamera does, for the two push
+// multipliers) then writes truefps's own cell into each. A cell follows its slot while its routine is on and holds
+// the client's constant otherwise, which is what that routine's whole ticks read. The class is left open: every other
+// SwapImm site still swaps in a global here, because no tool is known to save one of those operands. Giving one the
+// same rule is a table edit (SiteSpec::cell) and larger arrays below.
+inline constexpr size_t kSiteCellCount = 2;
+inline float* g_truefpsSiteCells[kSiteCellCount] = {};
+inline const float* g_truefpsSiteCellSource[kSiteCellCount] = {};   // the paced value each cell follows while its routine is on
+inline float g_truefpsSiteCellRest[kSiteCellCount] = {};            // the client's constant, which it holds otherwise
+inline uint8_t g_truefpsSiteCellGroup[kSiteCellCount] = {};         // its routine: smooth.h's group index
+inline void syncSiteCells() {
+    for (size_t i = 0; i < kSiteCellCount; i++)
+        if (g_truefpsSiteCells[i] && g_truefpsSiteCellSource[i])
+            *g_truefpsSiteCells[i] = g_truefpsGroupOn[g_truefpsSiteCellGroup[i]] ? *g_truefpsSiteCellSource[i] : g_truefpsSiteCellRest[i];
+}
+// The five camera factor calls push their multiplier as an immediate at the call. The value found there at resolve is
+// kept per stub, so a factor another tool retuned is the one the stub's gate matches and the one converted for the
+// frame, instead of being passed through and then applied once per iteration.
+inline uint32_t g_truefpsLookAtKBits = kBits025, g_truefpsRecenterKBits = kBits005, g_truefpsResetKBits = kBits0125, g_truefpsFirstPersonKBits = kBits0125;
+inline float g_truefpsLookAtK = 0.25f, g_truefpsRecenterK = floatFromBits(kBits005), g_truefpsResetK = 0.125f, g_truefpsFirstPersonK = 0.125f;
 inline float g_truefpsSigma = 1.0f, g_truefpsQ075 = 0.75f, g_truefpsP025 = 0.25f;
 inline float g_truefpsF001 = floatFromBits(kBits001);
 inline float g_truefpsF00001 = floatFromBits(kBits00001);
@@ -451,12 +481,17 @@ inline void publishFrame(const FrameValues& v, bool smooth) {
     ++g_truefpsEntFrame;
     g.frame = v;
     g_truefpsOne = v.one ? 1 : 0;
-    g_truefpsF025 = v.f025; g_truefpsF0125 = v.f0125; g_truefpsF005 = v.f005; g_truefpsF05 = v.f05;
+    g_truefpsF025 = v.f025; g_truefpsF0125 = v.f0125; g_truefpsF05 = v.f05;
     g_truefpsSigma = v.sigma; g_truefpsQ075 = v.q075; g_truefpsP025 = v.p025; g_truefpsF001 = v.f001; g_truefpsF00001 = v.f00001; g_truefpsFC001 = v.fc001; g_truefpsFC00001 = v.fc00001;
     g_truefpsFZ025 = v.fz025; g_truefpsFZLow = v.fzLow; g_truefpsFZHigh = v.fzHigh;
     g_truefpsFL04 = v.fl04; g_truefpsFL004 = v.fl004; g_truefpsFSound = v.fsnd;
     g_truefpsSig = v.one ? 1.0 : v.sig;
-    g_truefpsResetF = v.f0125;
+    g_truefpsLookAtK = perIterationK(g_truefpsLookAtKBits, v.one, v.sig);
+    g_truefpsRecenterK = perIterationK(g_truefpsRecenterKBits, v.one, v.sig);
+    g_truefpsResetK = perIterationK(g_truefpsResetKBits, v.one, v.sig);
+    g_truefpsFirstPersonK = perIterationK(g_truefpsFirstPersonKBits, v.one, v.sig);
+    g_truefpsResetF = g_truefpsResetK;
+    syncSiteCells();
     g_truefpsCallStep = smooth ? float(v.s / kNativeStep) : 1.0f;
     // Outside smooth mode, the client's own 6 degrees.
     if (!smooth) g_truefpsSixDegreeNative = floatFromBits(kBitsSixDeg);
@@ -531,8 +566,7 @@ inline void beginFrame() {
         }
     }
     g.frameSmooth = smooth;
-    if (!g.spreadTicks) g.spreader.reset();
-    const float ticks = (smooth && g.spreadTicks) ? g.spreader.push(g.lastFrameTicks) : g.lastFrameTicks;
+    const float ticks = smooth ? g.spreader.push(g.lastFrameTicks) : g.lastFrameTicks;
     const double native = kNativeStep;
     const FrameValues v = smooth ? nextFrame(g.carry, ticks, g.speed) : originalFrame();
     publishFrame(v, smooth);
@@ -1067,6 +1101,22 @@ inline bool restoreTimer(uintptr_t currentTimer) {
     if (ok) g.timer = 0;
     return ok;
 }
+// At unload: whether the frame timer truefps switched (`switched`) may still call into this module once it is gone.
+// Decided on what the app's timer slot names now (`current`) before that object is touched: once the slot has moved
+// on, the object may be freed, and heap bookkeeping in its first dword would read as a vtable outside the image.
+// `vtable` is the switched object's table, read (`vtableRead`) only while the slot still names it.
+// - Nothing switched, or an empty slot: no. The client's own destructor puts its class's table back, frees the timer
+//   and empties the slot (RVA 0x109A9 on Sep-10), which is what every game close does before this runs.
+// - Another object in the slot: yes. The switched one may still carry the copy, and it is never read.
+// - The same object: truefps's copy (restoreTimer takes it out next) or the original table, no; another table inside
+//   the client image is the client's own code, no; one outside it is another tool's copy of truefps's table, which
+//   may call truefps's entries, yes; a table that could not be read cannot be said to be out, yes.
+inline bool timerOrphaned(uintptr_t switched, uintptr_t current, bool vtableRead, uintptr_t vtable, uintptr_t copy, uintptr_t original, const Module& image) {
+    if (!switched || !current) return false;
+    if (current != switched || !vtableRead) return true;
+    if (vtable == copy || vtable == original) return false;
+    return !image.contains(vtable, 4);
+}
 
 // Both step accessors use caller-address policy in smooth mode, otherwise the original step.
 // No calls outside this DLL.
@@ -1149,7 +1199,7 @@ inline void waitUntil(int64_t target) {
 // Frame k is recorded at Present entry: truefpsMs covers callback k-1 including pacing;
 // presentMs covers Present through timer reset including limiter wait; workMs covers update/draw.
 // outsideMs retains the combined span; without a reset, presentMs and workMs are -1. Unknown CPU time is -1.
-enum : uint8_t { kFrameSpread = 1, kFrameBackground = 4, kFrameMenuPaused = 8 };
+enum : uint8_t { kFrameBackground = 4, kFrameMenuPaused = 8 };
 struct FrameRecord {
     int64_t at = 0;
     float ms = 0.0f, waitMs = 0.0f, lateMs = 0.0f, ticks = 0.0f;
@@ -1214,10 +1264,11 @@ inline std::string frameDetailText(const FrameRecord& r, double ago) {
     _snprintf_s(head, sizeof head, _TRUNCATE, "  %.1f ms, %.1f s ago: ", double(r.ms), ago);
     return head + framePartsText(r);
 }
-// New columns go at the end.
+// New columns go at the end. The one column taken out, spread (between smooth_fps and cutscene_speed, removed in
+// build 6AB28C1F), moved the four after it one place left; a reader that finds columns by the header is not affected.
 inline constexpr const char* kFrameCsvHeader =
     "seconds_ago,frame_ms,game_drawing_ms,present_others_ms,truefps_ms,truefps_wait_ms,wait_late_ms,cpu_ms,present_game_drawing_cpu_ms,read_kb,game_ticks,"
-    "game_update_ms,drawing_ms,after_drawing_ms,scenes,smooth_fps,spread,cutscene_speed,background,menu_paused,limiter_wait_ms";
+    "game_update_ms,drawing_ms,after_drawing_ms,scenes,smooth_fps,cutscene_speed,background,menu_paused,limiter_wait_ms";
 // The kFrameCsvHeader columns; unknown values are empty fields.
 inline std::string frameCsvRow(const FrameRecord& r, double ago) {
     const auto opt = [](float v) {
@@ -1231,7 +1282,7 @@ inline std::string frameCsvRow(const FrameRecord& r, double ago) {
     char mid[64];
     _snprintf_s(mid, sizeof mid, _TRUNCATE, ",%.3f,%.3f,%.3f,", double(r.truefpsMs), double(r.waitMs), double(r.lateMs));
     char flags[64];
-    _snprintf_s(flags, sizeof flags, _TRUNCATE, ",%u,%u,%d,%u,%d,%d", unsigned(r.scenes), unsigned(r.smoothFps), (r.flags & kFrameSpread) ? 1 : 0, unsigned(r.speed),
+    _snprintf_s(flags, sizeof flags, _TRUNCATE, ",%u,%u,%u,%d,%d", unsigned(r.scenes), unsigned(r.smoothFps), unsigned(r.speed),
                 (r.flags & kFrameBackground) ? 1 : 0, (r.flags & kFrameMenuPaused) ? 1 : 0);
     return head + opt(r.workMs) + "," + opt(r.presentMs) + mid + opt(r.cpuMs) + "," + opt(r.outsideCpuMs) + tail + "," + opt(r.updateMs) + "," + opt(r.drawMs) + "," +
            opt(r.afterDrawMs) + flags + "," + opt(r.limiterWaitMs);

@@ -323,10 +323,50 @@ struct JumpSite {
     uintptr_t at = 0;
     uint8_t original[5] = {};   // the function's first bytes
     uintptr_t pad = 0;          // five bytes of NOP padding after the function, within a short jump of `at`
+    uint8_t padOriginal[5] = {};   // what that padding held at resolve: the only bytes truefps writes over
+    bool padClaimed = false;       // ... and it was padding truefps may claim (padClaimable)
     State state = State::Original;
 };
 // A step accessor's jump pad: the padding after its code.
 inline uintptr_t stepPadAt(uintptr_t accessor) { return accessor + parsePattern(kStepPattern).size(); }
+// The span of the module this code is in.
+inline bool ownImageSpan(uintptr_t& lo, uintptr_t& hi) {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(&stepPadAt), &self) ||
+        !self)
+        return false;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(self);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<uintptr_t>(self) + uintptr_t(dos->e_lfanew));
+    lo = reinterpret_cast<uintptr_t>(self);
+    hi = lo + nt->OptionalHeader.SizeOfImage;
+    return true;
+}
+// The pad is the only place truefps claims bytes belonging to no function, so what is there is checked before it is
+// claimed. Claimable: the client's own padding, five 0x90; or a jump this plugin left - one into this module (an
+// earlier load usually lands on the same base) or one whose target is no longer mapped executable code. A jump into
+// code that is still there and is not ours is another tool's trampoline: overwriting it would break that tool
+// silently, so the pad is left alone. A third module loaded over a gone load's base is refused the same way.
+inline bool padClaimable(const uint8_t* pad, uintptr_t at) {
+    const uint8_t nops[5] = {0x90, 0x90, 0x90, 0x90, 0x90};
+    if (std::memcmp(pad, nops, 5) == 0) return true;
+    if (pad[0] != 0xE9) return false;
+    int32_t rel = 0;
+    std::memcpy(&rel, pad + 1, 4);
+    const uintptr_t target = at + 5 + uintptr_t(intptr_t(rel));
+    uintptr_t lo = 0, hi = 0;
+    if (ownImageSpan(lo, hi) && target >= lo && target < hi) return true;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(target), &mbi, sizeof mbi) != sizeof mbi) return true;   // nothing there to break
+    const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    return !(mbi.State == MEM_COMMIT && (mbi.Protect & exec) != 0);
+}
+// Records what the pad holds and whether truefps may claim it. At resolve only: VirtualQuery takes a lock, so this
+// must not run inside a thread freeze.
+inline bool recordPad(JumpSite& site) {
+    site.padClaimed = readRaw(site.pad, site.padOriginal, 5) && padClaimable(site.padOriginal, site.pad);
+    return site.padClaimed;
+}
 enum class PatchResult { Done, Failed };
 using CodeWriter = bool (*)(uintptr_t at, const uint8_t* bytes, size_t n);
 
@@ -360,21 +400,29 @@ inline bool swapHead(uintptr_t at, uint16_t expected, uint16_t replacement) {
     return ok;
 }
 
-// True while every site still holds its original head and unused padding.
-inline bool jumpsInstallable(const JumpSite* sites, size_t n) {
-    const uint8_t nops[5] = {0x90, 0x90, 0x90, 0x90, 0x90};
+// True while every site still holds its original head, and padding truefps may write: the bytes resolve recorded
+// there, or the jump truefps itself wrote on an earlier install in this session. Anything else arrived after
+// resolve and belongs to another tool. `why` names the first refusal.
+inline bool jumpsInstallable(const JumpSite* sites, size_t n, uintptr_t target, const char** why = nullptr) {
+    const auto refuse = [&](const char* text) { if (why) *why = text; return false; };
     uint16_t head = 0;
     for (size_t i = 0; i < n; i++) {
-        if (sites[i].state != JumpSite::State::Original || !bytesAre(sites[i].at, sites[i].original, 5) || !shortJump(sites[i], head)) return false;
-        uint8_t padNow[5] = {};
-        if (!readRaw(sites[i].pad, padNow, 5) || (std::memcmp(padNow, nops, 5) != 0 && padNow[0] != 0xE9)) return false;   // NOPs, or a dead jump from an earlier load
+        if (sites[i].state != JumpSite::State::Original || !bytesAre(sites[i].at, sites[i].original, 5) || !shortJump(sites[i], head))
+            return refuse("a game step accessor no longer holds the code TrueFPS found");
+        if (!sites[i].padClaimed) return refuse("the padding after a game step accessor was already another tool's when TrueFPS loaded");
+        uint8_t padNow[5] = {}, ours[5] = {};
+        makeJump(ours, sites[i].pad, target);
+        if (!readRaw(sites[i].pad, padNow, 5)) return refuse("the padding after a game step accessor could not be read");
+        if (std::memcmp(padNow, sites[i].padOriginal, 5) != 0 && std::memcmp(padNow, ours, 5) != 0)
+            return refuse("the padding after a game step accessor has been written by another tool since TrueFPS loaded");
     }
+    if (why) *why = nullptr;
     return true;
 }
 // Installs the hot patch at every site, or at none: a failure swaps back the heads already swapped.
 inline PatchResult installJumps(JumpSite* sites, size_t n, uintptr_t target, CodeWriter write = writeCode) {
     uint16_t head = 0;
-    if (!jumpsInstallable(sites, n)) return PatchResult::Failed;
+    if (!jumpsInstallable(sites, n, target)) return PatchResult::Failed;
     for (size_t i = 0; i < n; i++) {
         uint8_t jump[5];
         makeJump(jump, sites[i].pad, target);
