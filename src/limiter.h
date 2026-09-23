@@ -132,8 +132,7 @@ inline float nativeEase(uint32_t kBits, double s) {
     return float(-std::expm1((s / kNativeStep) * std::log(r)) / s);
 }
 inline uint32_t bitsOf(float f) { uint32_t b = 0; std::memcpy(&b, &f, 4); return b; }
-// A "fraction of the way per tick" factor k applied once per iteration instead of once per tick: 1 - (1 - k)^sig.
-// The camera factor calls push k at the call, so the value found in the client's code is the one converted here.
+// Convert the client's per-tick easing factor to sig ticks per iteration: 1 - (1 - k)^sig.
 inline float perIterationK(uint32_t kBits, bool one, double sig) {
     const double k = double(floatFromBits(kBits));
     return one ? float(k) : float(1.0 - std::pow(1.0 - k, sig));
@@ -298,16 +297,9 @@ inline float g_truefpsMoveTicks = 0.0f;       // real or whole ticks (State::mov
 inline uint8_t g_truefpsOne = 1;                      // sig == 1: every factor stub takes its original instruction
 // No stub reads these three: the patched client code reads F025 and F05, and the cells below follow F0125.
 inline float g_truefpsF025 = 0.25f, g_truefpsF0125 = 0.125f, g_truefpsF05 = 0.5f;
-// An operand another tool can save and write back after truefps has unloaded must stay valid, so the two camera push
-// multipliers and the three actor render positions are swapped to cells in a page that outlives the module
-// (smooth.h), not to the globals here. A cell is not tied to any one constant: allocatePersistentCells points each
-// one at the slot its rows would otherwise have been swapped to, so a site on another constant needs no more than its
-// row. Rows that name one client constant in one routine share a cell, as they share that constant in the client: a
-// tool that saves one of those operands and writes it back into all of them (xicamera does, for the two push
-// multipliers) then writes truefps's own cell into each. A cell follows its slot while its routine is on and holds
-// the client's constant otherwise, which is what that routine's whole ticks read. The class is left open: every other
-// SwapImm site still swaps in a global here, because no tool is known to save one of those operands. Giving one the
-// same rule is a table edit (SiteSpec::cell) and larger arrays below.
+// Camera push and actor render operands use cells that outlive the DLL: other tools may restore saved pointers after unload.
+// Sites in one routine using the same client constant share a cell, so xicamera can restore one pointer to both push operands.
+// Cells hold paced values while their routine is on and native constants otherwise.
 inline constexpr size_t kSiteCellCount = 2;
 inline float* g_truefpsSiteCells[kSiteCellCount] = {};
 inline const float* g_truefpsSiteCellSource[kSiteCellCount] = {};   // the paced value each cell follows while its routine is on
@@ -318,9 +310,7 @@ inline void syncSiteCells() {
         if (g_truefpsSiteCells[i] && g_truefpsSiteCellSource[i])
             *g_truefpsSiteCells[i] = g_truefpsGroupOn[g_truefpsSiteCellGroup[i]] ? *g_truefpsSiteCellSource[i] : g_truefpsSiteCellRest[i];
 }
-// The five camera factor calls push their multiplier as an immediate at the call. The value found there at resolve is
-// kept per stub, so a factor another tool retuned is the one the stub's gate matches and the one converted for the
-// frame, instead of being passed through and then applied once per iteration.
+// Preserve each caller's immediate factor for stub matching and per-iteration conversion, including values retuned by other tools.
 inline uint32_t g_truefpsLookAtKBits = kBits025, g_truefpsRecenterKBits = kBits005, g_truefpsResetKBits = kBits0125, g_truefpsFirstPersonKBits = kBits0125;
 inline float g_truefpsLookAtK = 0.25f, g_truefpsRecenterK = floatFromBits(kBits005), g_truefpsResetK = 0.125f, g_truefpsFirstPersonK = 0.125f;
 inline float g_truefpsSigma = 1.0f, g_truefpsQ075 = 0.75f, g_truefpsP025 = 0.25f;
@@ -1101,16 +1091,9 @@ inline bool restoreTimer(uintptr_t currentTimer) {
     if (ok) g.timer = 0;
     return ok;
 }
-// At unload: whether the frame timer truefps switched (`switched`) may still call into this module once it is gone.
-// Decided on what the app's timer slot names now (`current`) before that object is touched: once the slot has moved
-// on, the object may be freed, and heap bookkeeping in its first dword would read as a vtable outside the image.
-// `vtable` is the switched object's table, read (`vtableRead`) only while the slot still names it.
-// - Nothing switched, or an empty slot: no. The client's own destructor puts its class's table back, frees the timer
-//   and empties the slot (RVA 0x109A9 on Sep-10), which is what every game close does before this runs.
-// - Another object in the slot: yes. The switched one may still carry the copy, and it is never read.
-// - The same object: truefps's copy (restoreTimer takes it out next) or the original table, no; another table inside
-//   the client image is the client's own code, no; one outside it is another tool's copy of truefps's table, which
-//   may call truefps's entries, yes; a table that could not be read cannot be said to be out, yes.
+// Check whether the timer may retain DLL callbacks. Read its vtable only while the app slot still names it;
+// a replaced object may already be freed. An empty slot means the client's destructor finished cleanup.
+// Replaced objects, unreadable tables and external copies may retain callbacks. restoreTimer handles our own copy next.
 inline bool timerOrphaned(uintptr_t switched, uintptr_t current, bool vtableRead, uintptr_t vtable, uintptr_t copy, uintptr_t original, const Module& image) {
     if (!switched || !current) return false;
     if (current != switched || !vtableRead) return true;
@@ -1264,8 +1247,7 @@ inline std::string frameDetailText(const FrameRecord& r, double ago) {
     _snprintf_s(head, sizeof head, _TRUNCATE, "  %.1f ms, %.1f s ago: ", double(r.ms), ago);
     return head + framePartsText(r);
 }
-// New columns go at the end. The one column taken out, spread (between smooth_fps and cutscene_speed, removed in
-// build 6AB28C1F), moved the four after it one place left; a reader that finds columns by the header is not affected.
+// Append new columns; readers should resolve columns by header name.
 inline constexpr const char* kFrameCsvHeader =
     "seconds_ago,frame_ms,game_drawing_ms,present_others_ms,truefps_ms,truefps_wait_ms,wait_late_ms,cpu_ms,present_game_drawing_cpu_ms,read_kb,game_ticks,"
     "game_update_ms,drawing_ms,after_drawing_ms,scenes,smooth_fps,cutscene_speed,background,menu_paused,limiter_wait_ms";

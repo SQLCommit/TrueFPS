@@ -323,13 +323,13 @@ struct JumpSite {
     uintptr_t at = 0;
     uint8_t original[5] = {};   // the function's first bytes
     uintptr_t pad = 0;          // five bytes of NOP padding after the function, within a short jump of `at`
-    uint8_t padOriginal[5] = {};   // what that padding held at resolve: the only bytes truefps writes over
-    bool padClaimed = false;       // ... and it was padding truefps may claim (padClaimable)
+    uint8_t padOriginal[5] = {};   // padding bytes recorded at resolve
+    bool padClaimed = false;       // recorded padding passed padClaimable
     State state = State::Original;
 };
 // A step accessor's jump pad: the padding after its code.
 inline uintptr_t stepPadAt(uintptr_t accessor) { return accessor + parsePattern(kStepPattern).size(); }
-// The span of the module this code is in.
+// This module's image bounds.
 inline bool ownImageSpan(uintptr_t& lo, uintptr_t& hi) {
     HMODULE self = nullptr;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -342,11 +342,8 @@ inline bool ownImageSpan(uintptr_t& lo, uintptr_t& hi) {
     hi = lo + nt->OptionalHeader.SizeOfImage;
     return true;
 }
-// The pad is the only place truefps claims bytes belonging to no function, so what is there is checked before it is
-// claimed. Claimable: the client's own padding, five 0x90; or a jump this plugin left - one into this module (an
-// earlier load usually lands on the same base) or one whose target is no longer mapped executable code. A jump into
-// code that is still there and is not ours is another tool's trampoline: overwriting it would break that tool
-// silently, so the pad is left alone. A third module loaded over a gone load's base is refused the same way.
+// Accept five NOPs, a jump into this module, or a jump whose target is no longer executable.
+// Leave jumps into other executable mappings alone, including a module reusing an earlier load's address.
 inline bool padClaimable(const uint8_t* pad, uintptr_t at) {
     const uint8_t nops[5] = {0x90, 0x90, 0x90, 0x90, 0x90};
     if (std::memcmp(pad, nops, 5) == 0) return true;
@@ -357,12 +354,11 @@ inline bool padClaimable(const uint8_t* pad, uintptr_t at) {
     uintptr_t lo = 0, hi = 0;
     if (ownImageSpan(lo, hi) && target >= lo && target < hi) return true;
     MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(reinterpret_cast<LPCVOID>(target), &mbi, sizeof mbi) != sizeof mbi) return true;   // nothing there to break
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(target), &mbi, sizeof mbi) != sizeof mbi) return true;   // no target mapping found
     const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
     return !(mbi.State == MEM_COMMIT && (mbi.Protect & exec) != 0);
 }
-// Records what the pad holds and whether truefps may claim it. At resolve only: VirtualQuery takes a lock, so this
-// must not run inside a thread freeze.
+// Record pad bytes and ownership at resolve. Never call under a freeze: VirtualQuery takes a lock.
 inline bool recordPad(JumpSite& site) {
     site.padClaimed = readRaw(site.pad, site.padOriginal, 5) && padClaimable(site.padOriginal, site.pad);
     return site.padClaimed;
@@ -400,9 +396,8 @@ inline bool swapHead(uintptr_t at, uint16_t expected, uint16_t replacement) {
     return ok;
 }
 
-// True while every site still holds its original head, and padding truefps may write: the bytes resolve recorded
-// there, or the jump truefps itself wrote on an earlier install in this session. Anything else arrived after
-// resolve and belongs to another tool. `why` names the first refusal.
+// Require original heads and claimable pads holding either their recorded bytes or this session's jump.
+// Refuse later writes by other tools; `why` names the first failure.
 inline bool jumpsInstallable(const JumpSite* sites, size_t n, uintptr_t target, const char** why = nullptr) {
     const auto refuse = [&](const char* text) { if (why) *why = text; return false; };
     uint16_t head = 0;

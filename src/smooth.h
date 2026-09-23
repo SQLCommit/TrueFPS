@@ -23,8 +23,7 @@ inline float g_truefpsK005 = floatFromBits(kBits005);   // the client's 0.05, 0.
 inline float g_truefpsK0012 = floatFromBits(0x3C449BA6);
 // The eye loop's far-distance threshold (its `fcomp` at 0x1fd03, 100.0 on every build measured): above it the loop
 // takes its other branch, which reaches the spring's site by `jmp` (0x1fd2c) carrying its own converted factor.
-// Read from the client at resolve (resolveSpringFar) and again once a second (refreshConstantCopies); the value
-// below is only what the stub compares before that.
+// resolveSpringFar reads the client value; refreshConstantCopies keeps it current.
 inline float g_truefpsSpringFar = 100.0f;
 inline float g_truefpsKm0125 = floatFromBits(0xBE000000);
 
@@ -70,7 +69,7 @@ inline int32_t __cdecl countdownSigma(int32_t* p) { return shadowCountdown(g_tru
 // The reset counter counts 8 CALLS down to 0 and must not go negative (0x1e2c0: != 0 means running): 16 ticks, s / 2 a frame.
 inline int32_t __cdecl countdownFrame(int32_t* p) { return shadowCountdown(g_truefpsShadowD88, p, double(g_truefpsCallStep), true); }
 // The reset key's loop (P4, step call to 0x2014d, factor call 0x2017c): h = min(s, 2R) ticks left; n_h = ceil(h / 1.05)
-// iterations of 1 - (1 - k)^(h / n_h), with k the factor that call passes (0.125 on every build measured).
+// iterations of 1 - (1 - k)^(h / n_h), with k the call's factor (normally 0.125).
 inline float resetIterations() {
     g_truefpsResetF = g_truefpsResetK;
     const double s = g.frame.s;
@@ -83,7 +82,7 @@ inline float resetIterations() {
     const int32_t nh = h > 0.0 ? int32_t(std::ceil(h / 1.05 - 1e-9)) : 0;
     if (nh <= 0) return 0.0f;
     const double sig = h / nh;
-    const double k = double(floatFromBits(g_truefpsResetKBits));   // the factor the client's own call passes
+    const double k = double(floatFromBits(g_truefpsResetKBits));   // the client's factor
     g_truefpsResetF = sig == 1.0 ? float(k) : float(1.0 - std::pow(1.0 - k, sig));
     return float(nh);
 }
@@ -152,9 +151,8 @@ inline float __cdecl entityStep(uintptr_t ent, int32_t n, int32_t path) {
 
 // Stubs. Each counts itself in g_truefpsStepInflight and preserves what the client code it replaced preserved.
 
-// Replace the expected K in push K; push vec; call helper with the frame factor. EAX is free. The value compared is
-// the one resolve found in the client's own `push` (publishSmoothAddresses), so a factor another tool retuned is
-// still recognised, and the frame's conversion of that same value is what goes in.
+// Replace K in push K; push vec; call helper only when it matches the resolved client factor.
+// Substitute that factor's per-frame conversion. EAX is free.
 __declspec(naked) inline void scaleStub025() {
     __asm {
         lock inc dword ptr [g_truefpsStepInflight]
@@ -236,9 +234,8 @@ __declspec(naked) inline void rotStub() {
 }
 // The 6..100 spring keeps the client's own `fmul [0.012]` (0x1fd4c) and replaces the seven bytes after it,
 // `D9 1C 24 8D 44 24 2C` (fstp [esp]; lea eax,[esp+2Ch], 0x1fd52), with `call springStub` + 2 NOPs.
-// Entry: ST0 = the branch's own delta; d sits at [esp+14h] for the client, so at [esp+18h] inside the stub (the
-// return address the call pushed) and at [esp+24h] after the stub's own three pushes. Both paths end with the two
-// displaced instructions, each + 4 for the return address.
+// Entry: ST0 = the branch's delta. d is at client [esp+14h], stub [esp+18h], then [esp+24h] after three pushes.
+// Both paths replay the displaced instructions with stack offsets increased by 4 for the return address.
 // The loop's beyond-100 branch jumps to this same tail (0x1fd2c, `jmp 0x1fd52`) with (d - 100) already scaled by
 // its own site's converted factor, so the stub re-runs the client's own test of d and leaves that branch alone.
 // For the 6..100 branch the slow path divides the client's constant back out to recover e.
@@ -634,9 +631,7 @@ enum class SiteKind : uint8_t {
 };
 enum class CallTarget : uint8_t { None, Scale, ScaleOut, StepAccessor, FrameCounter, NetIcon, HistoryWriter, SegmentTest, TrailStep, JobWalker };
 enum class Global : uint8_t { None, D8C, D88, Effects };
-// What a site accepts in the constant it names. `Exact` is an identification pin. The two bands are for the camera
-// factors another tool can plausibly retune in place: the value found is kept and used, so the routine stays smooth
-// instead of falling back to whole ticks, and a value outside the band is still refused.
+// Exact constants identify a site; banded camera factors accept retuning and use the value found.
 enum class FloatBand : uint8_t { Exact, UnitPositive, UnitNegative };
 
 struct SiteSpec {
@@ -663,15 +658,14 @@ struct SiteSpec {
     // SwapImm only: a value another tool may leave in the operand, pointing outside the client image. A factor of
     // 1 has no per-frame decay, so the site needs no pacing and is left exactly as that tool set it. 0: none.
     uint32_t neutralBits;
-    // SwapImm only: 1-based cell in the page that outlives this module (persistentCell). A tool that saves this
-    // operand and writes it back after truefps has unloaded must find a valid float there. Rows that name one client
-    // constant in one routine share a cell, because a tool may write one saved operand into all of them. 0: swap to `slot`.
+    // SwapImm only: 1-based persistent cell, valid if another tool restores this operand after unload.
+    // Sites using one constant in one routine share a cell: another tool may restore one saved operand to all.
+    // 0: swap to `slot`.
     uint8_t cell;
-    // What the constant at `floatAt` may hold: exactly `floatBits`, or any value in a band. Banded sites keep the
-    // value they found (`constantCopy`), so another tool's retune is followed instead of refusing the routine.
+    // Allowed values at `floatAt`; banded sites keep the resolved value in `constantCopy`.
     FloatBand band;
-    // A factor the client pushes as an immediate inside the site's context, at site + contextFloatAt. Its bits are
-    // copied into `contextBits` at resolve: that copy is the stub's own gate and what the frame converts. 0: none.
+    // Pushed factor at site + contextFloatAt, within the context. Copied to `contextBits` for the stub's
+    // comparison and per-frame conversion. 0: none.
     int8_t contextFloatAt;
     uint32_t* contextBits;
 };
@@ -872,8 +866,7 @@ inline constexpr const char* kLocRenderX = "D8 0D ?? ?? ?? ?? 83 C4 0C D9 5C 24 
 inline constexpr const char* kLocLightBlend = "D8 0D ?? ?? ?? ?? D9 54 24 10 D8 1D ?? ?? ?? ?? DF E0 25 00 01 00 00 75 08 C7 44 24 10 00 00 80 3F";
 inline constexpr const char* kLocShadowFirst = "C7 46 08 00 00 00 00 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? D9 54 24 18 D8 1D";
 inline constexpr const char* kLocShadowSecond = "50 E8 ?? ?? ?? ?? 83 C4 10 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? D9 54 24 18 D8 1D";
-// The zoom return. Its last four bytes are the default zoom distance the routine returns to - a camera constant
-// another tool can retune - so they are wildcarded: the locator is unique without them, and nothing here reads it.
+// Wildcard the trailing default zoom distance: other tools retune it, and the locator is unique without it.
 inline constexpr const char* kLocZoomReturn =
     "E8 ?? ?? ?? ?? D8 2D ?? ?? ?? ?? D8 0D ?? ?? ?? ?? D9 5C 24 10 D9 05 ?? ?? ?? ?? D8 5C 24 10 DF E0 F6 C4 05 7A 2A "
     "D9 44 24 10 D8 1D ?? ?? ?? ?? DF E0 F6 C4 05 7A 19 C7 44 24 10 ?? ?? ?? ??";
@@ -888,8 +881,7 @@ inline const SiteSpec kSites[] = {
     {"eye hold countdown", 0x1fa55, "D8 25 ?? ?? ?? ?? D9 15 ?? ?? ?? ?? D8 1D ?? ?? ?? ?? DF E0", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits1, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsSigma, nullptr, 0},
     {"eye auto-rotate hold", 0x1fb96, "A1 ?? ?? ?? ?? 48 A3 ?? ?? ?? ?? 79 0C C7 05 ?? ?? ?? ?? 00 00 00 00", 0, nullptr, 0, SiteKind::ReplaceCall, 11, 0, 0, 0, 0, CallTarget::None, Global::D8C, 1, &d8cStub, nullptr, nullptr, 0},
     {"eye auto-rotate factor", 0x1fcc8, "D8 0D ?? ?? ?? ?? D9 1C 24 50 51 E8 ?? ?? ?? ??", 0, nullptr, 0, SiteKind::ReplaceCall, 6, 2, kBits005, 0, 0, CallTarget::None, Global::None, 0, &rotStub, nullptr, &g_truefpsK005, 0, 0, 0, FloatBand::UnitPositive},
-    // A "half the way per tick" multiplier: another tool's 1.0 means "snap", which has no decay to pace. Its 0.5 is
-    // not the jitter constant, so it takes no cell; nothing saves this operand.
+    // Native factor 0.5; another tool's 1.0 snaps without decay. No shared jitter operand, so no persistent cell.
     {"eye spring beyond 100", 0x1fd26, "D8 0D ?? ?? ?? ?? EB 24 D9 44 24 10 D8 1D ?? ?? ?? ??", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits05, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF05, nullptr, 0, kBits1},
     // The site is the seven bytes after the client's own `fmul [0.012]` (0x1fd4c), which stays in: floatAt -4 names
     // that constant. The 6.0 distance two instructions earlier is identification only (the context), not a pinned value.
@@ -910,8 +902,8 @@ inline const SiteSpec kSites[] = {
     {"first-person camera look-at call", 0x2119d, "E8 ?? ?? ?? ?? 8D 54 24 14 52 56 E8 ?? ?? ?? ??", 0, "68 ?? ?? ?? ?? 51", -6, SiteKind::CallToStub, 5, 0, 0, 0, 0, CallTarget::Scale, Global::None, 0, &scaleStub0125, nullptr, nullptr, 0, 0, 0, FloatBand::Exact, -5, &g_truefpsFirstPersonKBits},
     {"first-person camera eye call", 0x2121f, "E8 ?? ?? ?? ?? 8D 4C 24 14 51 56 E8 ?? ?? ?? ??", 0, "68 ?? ?? ?? ?? 50", -6, SiteKind::CallToStub, 5, 0, 0, 0, 0, CallTarget::Scale, Global::None, 0, &scaleStub0125, nullptr, nullptr, 0, 0, 0, FloatBand::Exact, -5, &g_truefpsFirstPersonKBits},
     // P7 render position
-    // The three share the jitter constant the two camera push multipliers use, and the same motive: a tool that
-    // wanted no actor render smoothing would point them at its own 1.0. Same rule, and one cell for the same reason.
+    // All three use the camera jitter constant; an external 1.0 disables smoothing.
+    // Share a cell so another tool can restore one saved operand to all three.
     {"render position x", 0xc65ee, kLocRenderX, 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits0125, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF0125, nullptr, 0, kBits1, 2},
     {"render position y", 0xc65ff, "D8 0D ?? ?? ?? ?? D9 5C 24 14 D9 44 24 18 D8 0D ?? ?? ?? ?? D9 5C 24 18 D9 44 24 3C", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits0125, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF0125, nullptr, 0, kBits1, 2},
     {"render position z", 0xc660d, "D8 0D ?? ?? ?? ?? D9 5C 24 18 D9 44 24 3C D8 44 24 10", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits0125, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF0125, nullptr, 0, kBits1, 2},
@@ -992,15 +984,14 @@ struct GroupSpec {
     uint32_t anchorRva;
     EntrySpec entries[16];         // PolicyEntry local[] in resolve is sized from this
     uint8_t entryCount;
-    bool optional = false;         // may be missing from a client build (absent) without being a failure
-    const char* marker = nullptr;  // an optional routine's feature in the client (a window name): present means the routine must be too
-    const char* markerName = nullptr;   // what the marker is, in words, for the failure reason
-    const char* absentNote = nullptr;   // the reason shown when the routine is absent
+    bool optional = false;         // missing anchor and marker mean absent, not failed
+    const char* marker = nullptr;  // feature signature: if present, the optional routine must resolve
+    const char* markerName = nullptr;   // marker description for failures
+    const char* absentNote = nullptr;   // diagnostic for an absent routine
 };
 // clang-format off
 inline constexpr GroupSpec kGroups[kGroupCount] = {
-    // Policy entries 0x1f024 and 0x1f0f7 sit byte for byte on the pan-speed signatures a camera tool matches. Both
-    // sides only read there, so nothing conflicts - but a site must never be patched at either entry.
+    // Entries 0x1f024 and 0x1f0f7 overlap another tool's pan-speed signatures. Keep them read-only policy entries.
     {"camera orbit, pitch and zoom", 0, 0, kLocLookAt, 0, 0x1f5d9, {{0x1f024, kPolicyS, "D8 4C 24 ?? 8B 06"}, {0x1f0f7, kPolicyS, "D8 4C 24 ?? 8B 16"}, {0x1f834, kPolicyS, "D8 0D ?? ?? ?? ?? D8 44 24 ??"}, {0x1f884, kPolicyS, "D8 0D ?? ?? ?? ?? D8 6C 24 ??"}, {0x1f8da, kPolicyS, "D8 0D ?? ?? ?? ?? D8 44 24 ??"}, {0x1f922, kPolicyS, "D8 0D ?? ?? ?? ?? D8 6C 24 ??"}}, 6},
     {"camera look-at follow", 0, 1, kLocLookAt, 0, 0x1f5d9, {{0x1f5a7, kPolicyN, "E8 ?? ?? ?? ?? 85 C0"}}, 1},
     {"camera recenter", 1, 1, "E8 ?? ?? ?? ?? 8D 44 24 34 8D 4C 24 34 50 55 51", 0, 0x1f6d1, {{0x1f670, kPolicyN, "E8 ?? ?? ?? ?? 85 C0"}, {0x1f716, kPolicyN, "E8 ?? ?? ?? ?? 3B E8"}}, 2},
@@ -1069,10 +1060,8 @@ inline constexpr GroupSpec kGroups[kGroupCount] = {
       {0x24df53, kPolicyNativeReal, "D8 0D ?? ?? ?? ?? DC 5C 24 14 DF E0 F6 C4 05 7A 26"}}, 2},
     // Wind gust timer +0x144 keeps whole ticks; only resampling/decay is paced.
     {"cloth wind gusts", 57, 1, kLocWindGust, 0, 0x188aa6, {}, 0},
-    // HorizonXI: the hold-time bar does not exist in the HorizonXI client (FFXiMain 69144FB9, Nov 2025); it is a
-    // separate optional routine so the cast bar still resolves there. Retail (6A995428, Sep 2026) resolves both.
-    // Absent only when the client also lacks the hold-time window's name ("menu    holdtime": 0 hits on HorizonXI,
-    // 2 on every retail dump); with the window there and the code not found, the routine fails.
+    // Optional and separate from the cast bar for clients without holdtime (HorizonXI).
+    // Missing code is allowed only when the "menu    holdtime" marker is also absent.
     // The hold bar (holdtime, +0x1C): a float countdown that fills the bar every frame with S.
     {"hold bar", 0, 0, "E8 ?? ?? ?? ?? D8 6E 1C D9 56 1C D8 1D ?? ?? ?? ?? DF E0 F6 C4", 5, 0x12cbd4, {{0x12cbd4, kPolicyS, "D8 6E ?? D9 56 ??"}}, 1, true,
      "6D 65 6E 75 20 20 20 20 68 6F 6C 64 74 69 6D 65", "hold-time window", "not in this client (normal on HorizonXI; retail clients have it)"},
@@ -1084,9 +1073,7 @@ constexpr bool groupSitesInRange() {
     return true;
 }
 static_assert(groupSitesInRange(), "a group in kGroups names sites past the end of kSites");
-// An optional group is absent when its anchor and its marker both match nowhere, a test made before its sites are
-// checked: one with sites of its own would leave them unverified, so an optional group has none. Every optional group
-// names a marker and the texts that go with it.
+// Optional groups need a marker and diagnostics, and cannot own sites: the absence check skips site validation.
 constexpr bool optionalGroupsHaveNoSites() {
     for (const auto& group : kGroups)
         if (group.optional && (group.siteCount != 0 || !group.marker || !group.markerName || !group.absentNote)) return false;
@@ -1148,10 +1135,8 @@ struct Site {
     bool patched = false;   // truefps's bytes are (or may be) there
     bool kept = false;      // left in for the session (retireGroup)
     bool neutral = false;   // another tool's operand (SiteSpec::neutralBits): never written, never restored
-    bool unsafeOriginal = false;   // the operand removal would write back no longer holds this site's value (unreadable, or another value)
-    bool adopted = false;   // ... and truefps's own slot had been written there first. That slot is a cell in a page
-                            // that outlives this module and holds the client's own constant, so this is a reporting
-                            // flag: the unload needs no pin for it.
+    bool unsafeOriginal = false;   // saved operand is unreadable or no longer holds an allowed value
+    bool adopted = false;   // another tool replaced our persistent cell operand; no module pin needed
     bool inImage(uintptr_t addr, size_t n) const {
         return imageHi > imageLo && n <= imageHi - imageLo && addr >= imageLo && addr - imageLo <= imageHi - imageLo - n;
     }
@@ -1163,9 +1148,9 @@ struct GroupRuntime {
     bool found = false;     // every site and call site located and verified
     bool on = false;        // patches in, policy on
     bool failed = false;    // a patch could not go in, or the routine ran off the game thread: whole ticks
-    bool stuck = false;     // a patch could not come out: whole ticks until a later take-out restores every site
+    bool stuck = false;     // removal failed: whole ticks until every site is restored
     bool retired = false;   // its own step call ran on another thread (retireGroup)
-    bool absent = false;    // an optional group whose anchor and marker both matched nowhere: not in this client build (found stays false)
+    bool absent = false;    // optional anchor and marker both missing; found stays false
     std::string why;
     uint32_t quietRetryAt = 0;   // SmoothSites::frame to wait for before trying a multi-byte write again
     uint32_t quietMisses = 0;    // tries in a row that found a thread in the way; a page that could not be opened is not one of them
@@ -1189,7 +1174,7 @@ struct SmoothSites {
     bool sessionOver = false;             // a retired group's code stays in: smooth mode off for the session
 };
 
-// The float the imm32 at `immAddr` names, when the image holds both.
+// Read the float named by imm32 at `immAddr`; both must lie in the image.
 inline bool floatAtRead(const ImageView& img, uintptr_t immAddr, uint32_t& bits) {
     if (!img.has(immAddr, 4)) return false;
     const uint32_t target = img.u32(immAddr);
@@ -1201,8 +1186,7 @@ inline bool floatAtIs(const ImageView& img, uintptr_t immAddr, uint32_t bits) {
     uint32_t held = 0;
     return floatAtRead(img, immAddr, held) && held == bits;
 }
-// What the site's own constant may be: exactly the table's bits, or - for the camera factors another tool retunes
-// in place - any value in the site's band. A value outside it is still refused, and so is a NaN.
+// Accept the exact constant or a factor in the site's band. Banded comparisons reject NaN.
 inline bool constantInBand(const SiteSpec& spec, uint32_t bits) {
     const float k = floatFromBits(bits);
     switch (spec.band) {
@@ -1245,9 +1229,7 @@ inline bool locateSiteFrom(const std::vector<size_t>& hits, const SiteSpec& spec
     uint32_t foundBits = 0;
     const bool foundOk = spec.floatAt != 0 && floatAtRead(img, at + uintptr_t(intptr_t(spec.floatAt)), foundBits);
     if (!neutral && !repointed && spec.floatAt && !(foundOk && constantInBand(spec, foundBits))) { why = std::string(spec.name) + ": its constant is not the expected value"; return false; }
-    // The factor the client pushes at the call: wildcarded in the context, so its value is read here and carried.
-    // A table test keeps it inside the context, whose match has checked that span, so the bounds check below is
-    // there for the read alone.
+    // Read the wildcarded push immediate. The table requires it to lie within the verified context.
     uint32_t passedBits = 0;
     if (spec.contextFloatAt) {
         const uintptr_t imm = at + uintptr_t(intptr_t(spec.contextFloatAt));
@@ -1260,9 +1242,8 @@ inline bool locateSiteFrom(const std::vector<size_t>& hits, const SiteSpec& spec
     if (spec.float2At && spec.kind != SiteKind::Disp8 && !floatAtIs(img, at + uintptr_t(intptr_t(spec.float2At)), spec.float2Bits)) { why = std::string(spec.name) + ": a nearby constant is not the expected value"; return false; }
     const uint8_t* p = img.data + (at - img.base);
     switch (spec.kind) {
-    // D8 0D fmul, D8 25 fsub, D8 1D fcomp, D8 15 fcom, D9 05 fld are `<op> dword [imm32]`: the operand is the four
-    // bytes at +2, swapped in one locked compare-exchange (x86 makes that atomic at any alignment, and several of
-    // these operands are unaligned).
+    // D8 0D fmul, D8 25 fsub, D8 1D fcomp, D8 15 fcom, D9 05 fld use a four-byte address at +2.
+    // Some operands are unaligned; x86 locked compare-exchange still swaps them atomically.
     case SiteKind::SwapImm: if (!(p[0] == 0xD8 || p[0] == 0xD9) || !(p[1] == 0x0D || p[1] == 0x25 || p[1] == 0x05 || p[1] == 0x1D || p[1] == 0x15)) { why = std::string(spec.name) + " is not a float operand"; return false; } break;
     case SiteKind::CallToStub: if (p[0] != 0xE8) { why = std::string(spec.name) + " is not a call"; return false; } break;
     case SiteKind::ReplaceFld: if (p[0] != 0xD9 || !(p[1] == 0x80 || p[1] == 0x81)) { why = std::string(spec.name) + " is not the cached-step read"; return false; } break;
@@ -1362,7 +1343,7 @@ inline bool locateSiteFrom(const std::vector<size_t>& hits, const SiteSpec& spec
     if (neutral) { ++g_truefpsNeutralChanges; ++g_truefpsNeutralNow; }   // another tool's constant: none of the client's to copy
     else if (repointed) sm.floatBits[index] = spec.floatBits;   // verified live: it is not in the image to read
     else if (spec.floatAt) sm.floatBits[index] = foundBits;
-    else if (spec.contextFloatAt) sm.floatBits[index] = passedBits;   // the same slot: these sites name no floatAt
+    else if (spec.contextFloatAt) sm.floatBits[index] = passedBits;   // context factors have no floatAt
     return true;
 }
 inline bool locateSite(const SiteSpec& spec, const ImageView& img, const uintptr_t* accessors, size_t accessorCount, Site& out,
@@ -1370,14 +1351,11 @@ inline bool locateSite(const SiteSpec& spec, const ImageView& img, const uintptr
     return locateSiteFrom(findAll(img.data, img.size, parsePattern(spec.locator), 2), spec, img, accessors, accessorCount, out, sm, index, why);
 }
 
-// The eye loop's far-distance test, 0x53 before the spring site: `fld [esp+10h]; fcomp [threshold]; fnstsw ax;
-// and eax, 4100h; jnz`. springStub re-runs that test, so it compares the client's own threshold, not a value built
-// in here: its imm32 is read at resolve and the value it names is copied, the copy is re-read on the once-a-second
-// pass (refreshConstantCopies), and the site is refused when the test is not there to read.
+// Far-distance test, 0x53 before the spring site: `fld [esp+10h]; fcomp [threshold]; fnstsw ax;
+// and eax, 4100h; jnz`. Require this test and copy its threshold for springStub; refreshConstantCopies updates it.
 inline constexpr size_t kSpringSite = 6;   // kSites index ("eye spring 6..100")
 inline constexpr int32_t kSpringFarTestFromSite = -0x53, kSpringFarImmFromSite = -0x4D;
-// The jnz displacement is wildcarded: the site's own locator has pinned this code already, so it adds nothing to
-// identification, and pinning it would be one more way for a future build to cost the whole routine.
+// The site locator fixes the position; the jnz displacement is not needed for identification.
 inline constexpr const char* kSpringFarTest = "D9 44 24 10 D8 1D ?? ?? ?? ?? DF E0 25 00 41 00 00 75 ??";
 inline bool resolveSpringFar(const ImageView& img, const Site& spring, float& out) {
     if (!spring.spec) return false;
@@ -1416,9 +1394,8 @@ inline size_t resolveSmooth(const ImageView& img, const uintptr_t* accessors, si
     std::vector<bool> siteOk(kSiteCount, false);
     std::vector<std::string> siteWhy(kSiteCount);
     for (size_t i = 0; i < kSiteCount; i++) siteOk[i] = locateSiteFrom(hits[i], kSites[i], img, accessors, accessorCount, sm.sites[i], sm, i, siteWhy[i]);
-    // Sites that share a stub share the one gate it compares against, so they must have found the same factor; if
-    // they have not, neither can be converted and both are left out (the state before any of this was widened).
-    // Keyed on the stub, which is what does the comparing; a table test keeps stub and gate copy in step.
+    // Calls sharing a stub must pass the same factor: the stub has only one comparison value.
+    // Reject mismatches; the table requires each stub to use one contextBits destination.
     for (size_t i = 0; i < kSiteCount; i++) {
         if (!siteOk[i] || !kSites[i].contextBits || !kSites[i].stub) continue;
         for (size_t j = i + 1; j < kSiteCount; j++) {
@@ -1436,10 +1413,9 @@ inline size_t resolveSmooth(const ImageView& img, const uintptr_t* accessors, si
     for (uint8_t gi = 0; gi < kGroupCount; gi++) {
         const GroupSpec& gs = kGroups[gi];
         GroupRuntime& gr = sm.groups[gi];
-        // An optional routine missing from the code: absent if the client has no trace of its feature either,
-        // otherwise it fails like any other.
+        // A missing optional routine is absent only if its feature marker is also missing.
         if (gs.optional && hits[kSiteCount + gi].empty()) {
-            // markerAt is never 0 here (optionalGroupsHaveNoSites); the test keeps hits[0], a site's, from being read.
+            // Zero is the missing-marker sentinel, not a marker index into hits.
             if (markerAt[gi] && hits[markerAt[gi]].empty()) { gr.absent = true; gr.why = gs.absentNote; continue; }
             gr.why = std::string("its code was not found, although this client has the ") + gs.markerName;
             continue;
@@ -1490,7 +1466,7 @@ inline size_t resolveSmooth(const ImageView& img, const uintptr_t* accessors, si
     }
     return found;
 }
-// The routines this client build has: every group but an absent one.
+// Count all groups except those absent from this client build.
 inline size_t groupsPresent(const SmoothSites& sm) {
     size_t n = 0;
     for (const auto& gr : sm.groups) n += gr.absent ? 0 : 1;
@@ -1500,7 +1476,7 @@ inline size_t groupsPresent(const SmoothSites& sm) {
 // Makes the resolved addresses live for the stubs. Call before any patch goes in.
 inline bool allocatePersistentCells();
 inline void publishSmoothAddresses(const SmoothSites& sm) {
-    allocatePersistentCells();   // before any patch goes in: never under a freeze; the caller reports a failure
+    allocatePersistentCells();   // before patching, outside a freeze; the caller reports failure
     g_truefpsHelperScale = sm.helperScale;
     g_truefpsHelperScaleOut = sm.helperScaleOut;
     g_truefpsStepAccessor = sm.stepAccessor;
@@ -1522,16 +1498,13 @@ inline void publishSmoothAddresses(const SmoothSites& sm) {
     }
 }
 
-// The persistent slots. A tool that saves one of these operands writes it back when it unloads, which can be after
-// truefps has gone, so those cells live in a page of their own: allocated once, never freed, holding the client's own
-// constant except while their routine runs (syncSiteCells follows each cell's slot every frame while it does). The
-// module can then be unloaded, and reloaded, without the client ever reading a freed address.
+// Other tools may restore saved cell pointers after this module unloads. Allocate a separate page and never free it.
+// Cells hold client constants while their groups are off; syncSiteCells copies active slots each frame.
 inline constexpr size_t kPersistentCells = kSiteCellCount;
 inline float* g_truefpsCellPage = nullptr;
-inline bool g_truefpsCellPageFailed = false;   // the page could not be reserved: resolve says so, and so does the routine
-// Allocates the page and every cell the table claims: the first row naming a cell gives it its slot, its constant and
-// its routine, and the rows after it that name the same cell share it (a table test keeps those three the same).
-// Outside any freeze only (VirtualAlloc takes the address-space lock).
+inline bool g_truefpsCellPageFailed = false;   // allocation failure reported at resolve and group installation
+// The first row naming a cell sets its source slot, rest constant and group; all rows sharing it must agree.
+// Never allocate under a freeze: VirtualAlloc takes the address-space lock.
 inline bool allocatePersistentCells() {
     if (!g_truefpsCellPage) g_truefpsCellPage = static_cast<float*>(VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     g_truefpsCellPageFailed = g_truefpsCellPage == nullptr;
@@ -1540,7 +1513,7 @@ inline bool allocatePersistentCells() {
         const SiteSpec& spec = kSites[row];
         if (!spec.cell || spec.cell > kPersistentCells || !spec.slot) continue;
         const size_t i = size_t(spec.cell) - 1u;
-        if (g_truefpsSiteCells[i]) continue;             // an earlier row on the same constant claimed it
+        if (g_truefpsSiteCells[i]) continue;             // shared cell already initialized
         g_truefpsSiteCellRest[i] = floatFromBits(spec.floatBits);
         g_truefpsSiteCellSource[i] = spec.slot;
         g_truefpsSiteCellGroup[i] = siteGroup(row);
@@ -1578,7 +1551,7 @@ inline void buildPatch(Site& s) {
         s.patch[0] = 0xE8;
         const int32_t rel = int32_t(reinterpret_cast<uintptr_t>(spec.stub) - (s.at + 5));
         std::memcpy(s.patch + 1, &rel, 4);
-        if (spec.length > 5) std::memset(s.patch + 5, 0x90, size_t(spec.length) - 5u);   // `call rel32` is five; the rest is padding
+        if (spec.length > 5) std::memset(s.patch + 5, 0x90, size_t(spec.length) - 5u);   // pad after the five-byte call
         break;
     }
     case SiteKind::ReplaceFld: { s.patch[0] = 0xD9; s.patch[1] = 0x05; const uint32_t slot = uint32_t(reinterpret_cast<uintptr_t>(spec.slot)); std::memcpy(s.patch + 2, &slot, 4); break; }
@@ -1607,11 +1580,9 @@ inline bool takeNeutralOperand(Site& s, const uint8_t* head) {
     ++g_truefpsNeutralNow;
     return true;
 }
-// The same, where truefps's own slot was in that operand first. Only a site with a cell can be adopted: what that
-// tool saved out of the operand is then a cell in a page that outlives this module, holding the client's own
-// constant once restorePersistentCells has run, so it may write that pointer back at any time and `adopted` is only
-// a reporting flag. A site without a cell saved a pointer into this module, so it is not adopted: removal reports
-// failure and the unload keeps the module mapped, as it did before any site was given the neutral rule.
+// Accept takeover after our patch only for persistent cells: the tool may restore our pointer after unload.
+// restorePersistentCells leaves the client constant there. Without a cell, the saved pointer names this module,
+// so removal must fail and keep the module mapped.
 inline bool adoptForeignOperand(Site& s) {
     if (!s.spec || !s.spec->cell) return false;
     if (!takeNeutralOperand(s, s.patch)) return false;
@@ -1648,12 +1619,10 @@ inline bool installSite(Site& s, CodeWriter write = writeCode) {
     return false;
 }
 
-// Recorded operands that could no longer be written back: worth one line each.
+// Transitions to unsafe saved operands, for logging.
 inline uint32_t g_truefpsUnsafeOriginals = 0;
-// True when the operand removal would write back is safe to write. An operand inside the client image is the client's
-// own pool and is there for as long as the image is. One outside it was recorded, not chosen - an earlier load's cell,
-// or another tool's copy of the client's constant - and the tool that left it there may since have unmapped it, so it
-// is read again and must still hold this site's own constant.
+// Client-image operands remain valid for the image's lifetime. Saved external operands may have been unmapped
+// or changed; re-read them and require an allowed value before restoration.
 inline bool originalOperandSafe(Site& s) {
     const SiteSpec& spec = *s.spec;
     if (spec.kind != SiteKind::SwapImm || spec.floatAt != 2) return true;
@@ -1662,7 +1631,7 @@ inline bool originalOperandSafe(Site& s) {
     if (s.inImage(uintptr_t(addr), 4)) { s.unsafeOriginal = false; return true; }
     uint32_t bits = 0;
     if (readValue(uintptr_t(addr), bits) && constantInBand(spec, bits)) { s.unsafeOriginal = false; return true; }
-    // Removal runs every frame while a site is still in, so the change of state is counted, not the attempt.
+    // Count each transition once across repeated removal attempts.
     if (!s.unsafeOriginal) {
         s.unsafeOriginal = true;
         ++g_truefpsUnsafeOriginals;
@@ -1678,8 +1647,7 @@ inline bool removeSite(Site& s, CodeWriter write = writeCode) {
     const uint8_t n = s.spec->length;
     if (bytesAre(s.at, s.original, n)) { s.patched = false; return true; }
     if (!bytesAre(s.at, s.patch, n)) return adoptForeignOperand(s);
-    // Writing a dead address into live client code is worse than leaving truefps's own slot there: the slot stays
-    // valid while this module is mapped, and the existing rule keeps it mapped when a site could not be restored.
+    // Keep our valid slot if the saved operand is unsafe; failed removal keeps this module mapped.
     if (!originalOperandSafe(s)) return false;
     bool ok = false;
     switch (s.spec->kind) {
@@ -1695,17 +1663,13 @@ inline bool removeSite(Site& s, CodeWriter write = writeCode) {
     return adoptForeignOperand(s);
 }
 
-// Any site whose operand another tool took over after truefps wrote its own slot there. The pointer that tool holds
-// names a cell in a page that outlives this module, so no pin is needed (unloadMustStay has no `adopted` term); this
-// is read only to report that a value is left as that tool set it.
+// Report takeovers of our persistent cell operands. Their lifetime does not require a module pin.
 inline bool anyAdoptedSite(const SmoothSites& sm) {
     for (const auto& s : sm.sites) if (s.adopted) return true;
     return false;
 }
-// An adopted site whose operand the other tool has handed back: the original again, or truefps's own slot, which is
-// what it saved from the operand. Nothing of that tool's is left there, so the site is truefps's to restore again
-// (`patched` while its own slot is in) and no longer another tool's. Reads and flags only: no write, no allocation,
-// no logging (the unload runs it inside its freeze). True when the site changed state.
+// Reclaim an adopted site once it holds the original or our patch again; only the latter remains patched.
+// Returns whether state changed. Safe under the unload freeze: no writes to code, allocation or logging.
 inline bool reclaimAdoptedSite(Site& s) {
     if (!s.adopted || !s.neutral || !s.spec || s.spec->length != 6) return false;
     uint8_t now[6] = {};
@@ -1720,14 +1684,12 @@ inline bool reclaimAdoptedSite(Site& s) {
     return true;
 }
 
-// A site that is not as truefps left it, in words; nullptr when it is. `now` holds the site's bytes, read just before.
-// For /truefps diag, and for the reason a take-out that left a site in gives its routine.
+// Describe ownership or a restoration failure from the current bytes in `now`; nullptr for normal state.
 inline const char* siteStateNote(const Site& s, const uint8_t* now) {
     if (!s.spec) return nullptr;
     const size_t n = s.spec->length;
     if (s.neutral) {
-        // Handed back while no pass has looked yet (smooth mode off): an adopted site at truefps's own patch or its
-        // original, or any neutral site at an address in the client image.
+        // Detect returned operands before the next reclaim pass, including while smooth mode is off.
         uint32_t operand = 0;
         if (n >= 6) std::memcpy(&operand, now + 2, 4);
         const bool handedBack = n >= 6 && ((s.adopted && (std::memcmp(now, s.patch, n) == 0 || std::memcmp(now, s.original, n) == 0)) || s.inImage(uintptr_t(operand), 4));
@@ -1740,8 +1702,8 @@ inline const char* siteStateNote(const Site& s, const uint8_t* now) {
     if (!s.patched && std::memcmp(now, s.original, n) != 0) return "no longer holds the bytes TrueFPS found";
     return nullptr;
 }
-// Where a SwapImm site's operand in `now` points, in words: a cell or slot of this load, the client image, or neither
-// (an earlier load's cell and another tool's slot cannot be told apart from here). nullptr: not a SwapImm site.
+// Classify a SwapImm operand by address; nullptr for other sites.
+// External addresses do not distinguish older cell pages from another tool's slots.
 inline const char* operandWhere(const Site& s, const uint8_t* now) {
     if (!s.spec || s.spec->kind != SiteKind::SwapImm || s.spec->length < 6) return nullptr;
     uint32_t operand = 0;
@@ -1764,9 +1726,8 @@ inline bool retakeNeutralSite(Site& s) {
     uint32_t operand = 0, held = 0;
     std::memcpy(&operand, now + 2, 4);
     const float* ours = siteSlot(spec);
-    // Truefps's own slot counts as its patch only where truefps had written it first (adopted). A site that was
-    // another tool's from the start keeps that tool's operand as its original, so the slot there is not a patch
-    // removal could take back out: the site stays neutral.
+    // Recognize our patch only after adoption. Initially neutral sites saved the other tool's operand,
+    // so they cannot use it to remove a returned pointer to our slot.
     const bool mine = s.adopted && ours && operand == uint32_t(reinterpret_cast<uintptr_t>(ours));
     if (!mine && (!readValue(uintptr_t(operand), held) || held != spec.floatBits)) return false;
     if (!mine) std::memcpy(s.original, now, spec.length);
@@ -1779,14 +1740,12 @@ inline bool retakeNeutralSite(Site& s) {
 // Offer the neutral sites of running groups back to truefps, every g_truefpsRetakeFrames frames. Only atomic swaps,
 // so no freeze is needed; a site changes state only once its swap is in.
 inline uint32_t g_truefpsRetakeFrames = 60;   // about once a second at 60 fps; 0 never
-// The once-a-second pass's own gate. The factor copies are re-read on it whether or not a site is another tool's.
+// Refresh constants on this interval even when no sites are neutral.
 inline bool refreshDue(uint32_t frame) { return g_truefpsRetakeFrames != 0 && frame % g_truefpsRetakeFrames == 0; }
 // The gate runSmoothPatches uses: only while a site is another tool's, and only on one frame in g_truefpsRetakeFrames.
 inline bool retakeDue(uint32_t frame, size_t neutralNow) { return neutralNow != 0 && refreshDue(frame); }
 
-// The address of the client constant a site names. When that imm32 lies inside the bytes truefps replaces, the code
-// there is the patch now, so the address comes from the bytes recorded at resolve; otherwise it is read from the
-// instruction the patch leaves in (the spring's own `fmul`, which sits before its site).
+// Read a replaced imm32 from the saved bytes; read untouched instructions live (the spring's preceding fmul).
 inline bool siteConstantAddr(const Site& s, uintptr_t& addr) {
     if (!s.spec || !s.spec->floatAt) return false;
     const SiteSpec& spec = *s.spec;
@@ -1796,11 +1755,9 @@ inline bool siteConstantAddr(const Site& s, uintptr_t& addr) {
     addr = uintptr_t(imm);
     return addr != 0;
 }
-inline uint32_t g_truefpsConstantChanges = 0;   // factor copies re-read and changed: worth one log line each
-// The copies the fast paths read are taken once, at resolve. For the spring the client's own `fmul` stays in the
-// code, so a tool that retunes that constant afterwards would leave the stub dividing by the old one; for the other
-// two the reading instruction is replaced, so the same edit is a no-op for that tool. Either way the copy follows
-// what is there now. Returns how many changed; a value outside the site's band is ignored.
+inline uint32_t g_truefpsConstantChanges = 0;   // accepted constant changes, for logging
+// Follow client constant edits in the stub copies; ignore values outside each site's band.
+// In particular, springStub must divide by the same factor as the client's untouched fmul. Returns the change count.
 inline size_t refreshConstantCopies(SmoothSites& sm) {
     size_t changed = 0;
     for (size_t i = 0; i < kSiteCount; i++) {
@@ -1816,9 +1773,8 @@ inline size_t refreshConstantCopies(SmoothSites& sm) {
         ++changed;
         ++g_truefpsConstantChanges;
     }
-    // The factor a call passes is read at resolve too. The `push` that carries it sits outside the bytes truefps
-    // replaces, so it can be read live. Sites that share a stub share its one gate, so a new value is taken only
-    // when every located site on that stub reads the same one - otherwise the gate would be wrong for one of them.
+    // Push immediates remain outside the patches. Update a stub's comparison value only when all located
+    // calls using that stub agree on the new factor.
     for (size_t i = 0; i < kSiteCount; i++) {
         const SiteSpec& spec = kSites[i];
         const Site& s = sm.sites[i];
@@ -1841,9 +1797,7 @@ inline size_t refreshConstantCopies(SmoothSites& sm) {
         ++changed;
         ++g_truefpsConstantChanges;
     }
-    // The eye loop's far-distance threshold, which springStub compares as a copy: it follows the client's value the
-    // same way, once resolve has read it (springFar) and checked the test that holds its address. A value that is not
-    // above 0 is ignored.
+    // Refresh the far-distance threshold only after its test resolved; require a positive value.
     const Site& spring = sm.sites[kSpringSite];
     if (spring.spec && sm.springFar > 0.0f) {
         uint32_t imm = 0, bits = 0;
@@ -1859,9 +1813,8 @@ inline size_t refreshConstantCopies(SmoothSites& sm) {
     }
     return changed;
 }
-// A site of a routine that is not running is never taken back here, but an adopted one the other tool has handed
-// back is looked at all the same: it no longer counts as that tool's, and truefps's own slot back in its operand comes
-// out again (an atomic swap), since no routine is there to use it.
+// Retake neutral sites in active groups. In inactive groups, only reclaim adopted sites and remove returned
+// patches with an atomic swap.
 inline size_t retakeNeutralSites(SmoothSites& sm, CodeWriter write = writeCode) {
     size_t taken = 0;
     for (uint8_t i = 0; i < kGroupCount; i++) {
@@ -1879,8 +1832,7 @@ inline size_t retakeNeutralSites(SmoothSites& sm, CodeWriter write = writeCode) 
             // could not be read back still belongs to truefps, so that one is taken.
             if (!probe.patched && !installSite(probe, write) && !probe.patched) continue;
             site = probe;
-            // The other tool grabbed it again between the read and the write: keep that state, do not count it as
-            // taken - and take back the second count takeNeutralOperand added for a site already counted as theirs.
+            // A competing write made it neutral again. Undo takeNeutralOperand's duplicate ownership count.
             if (probe.neutral) {
                 if (g_truefpsNeutralNow) --g_truefpsNeutralNow;
                 continue;
@@ -2099,7 +2051,7 @@ inline bool retireGroup(SmoothSites& sm, uint8_t group, GroupLog log) {
         if (!removeSite(s)) removed = false;   // a compare-and-swap site: no multi-byte write
     }
     if (kept) sm.sessionOver = true;
-    gr.stuck = !removed;   // tried again on every call: a site that has come out since clears it
+    gr.stuck = !removed;   // clear after a later attempt restores all removable sites
     if (!gr.retired) {
         gr.retired = true;
         gr.failed = true;
@@ -2111,8 +2063,7 @@ inline bool retireGroup(SmoothSites& sm, uint8_t group, GroupLog log) {
     return removed && !kept;
 }
 
-// True when a group could not be patched because the page its cells live in is not there: a different cause from a
-// client change or a failed write, and the one resolve already knows about.
+// Distinguish a missing persistent cell from a changed client or a failed patch write.
 inline bool groupNeedsCellPage(uint8_t group) {
     const GroupSpec& gs = kGroups[group];
     for (uint8_t k = 0; k < gs.siteCount; k++) {
@@ -2142,8 +2093,8 @@ inline void runSmoothPatches(SmoothSites& sm, GroupLog log, CodeWriter write = w
         player.on = false;
         return;
     }
-    // Once a second, a routine stuck on a take-out tries it again: once every site of it is out, it goes back in below,
-    // as it would after smooth mode was next switched off. A failed or retired routine stays off whatever comes out.
+    // Retry stuck removals periodically; full restoration allows reinstallation below.
+    // Failed and retired groups stay off.
     if (refreshDue(sm.frame)) {
         for (uint8_t i = 0; i < kGroupCount; i++) {
             GroupRuntime& gr = sm.groups[i];
@@ -2179,8 +2130,7 @@ inline void runSmoothPatches(SmoothSites& sm, GroupLog log, CodeWriter write = w
         gr.on = true;
         g_truefpsGroupOn[i] = 1;
     }
-    // Once a second: follow a factor constant or the far threshold another tool retuned, offer back the sites a tool
-    // that unloaded has written the client's own value into, and look at the adopted sites of routines not running.
+    // Refresh retuned constants and reclaim operands returned by other tools.
     if (refreshDue(sm.frame)) refreshConstantCopies(sm);
     if (retakeDue(sm.frame, g_truefpsNeutralNow)) retakeNeutralSites(sm, write);
     const bool real = player.found && !player.failed && sm.groups[GroupLookAt].on && sm.groups[GroupEye].on;
@@ -2189,9 +2139,8 @@ inline void runSmoothPatches(SmoothSites& sm, GroupLog log, CodeWriter write = w
     g.moveReal = real;
 }
 
-// The code spans the unload may write: every patched site, and every adopted one, which another tool may have handed
-// back holding truefps's own slot (removeAllSitesFrozen restores it under the freeze, where no page can be opened).
-// Returns how many were written to `out`.
+// Include patched and adopted sites in the unload write ranges: adopted operands may have been returned.
+// Their pages must be writable before the freeze. Returns the number of ranges stored in `out`.
 inline size_t unloadSiteRanges(const SmoothSites& sm, CodeRange* out, size_t max) {
     size_t n = 0;
     for (const auto& site : sm.sites)
@@ -2205,8 +2154,7 @@ inline bool effectsReadersPatched(const SmoothSites& sm) {
     return false;
 }
 // Unload under a quiet freeze. Retain off-thread entity path 1: __ftol may still hold its float divisor.
-// Report those sites in keptPath1; no allocation or logging. An adopted site is looked at again first: one the other
-// tool has handed back is restored like any other, and only one it still holds is reported as its.
+// Report those sites in keptPath1; no allocation or logging. Reclaim returned adopted operands before removal.
 inline bool removeAllSitesFrozen(SmoothSites& sm, CodeWriter write = writeCode, bool* keptPath1 = nullptr) {
     bool ok = true;
     if (keptPath1) *keptPath1 = false;
@@ -2233,8 +2181,8 @@ inline bool removeAllSitesFrozen(SmoothSites& sm, CodeWriter write = writeCode, 
     return ok;
 }
 
-// Disable policies and restore owned patches. A site that cannot be restored is left as it is, and its group is stuck
-// (whole ticks, with what was found there as the reason) until a later call restores every site of it.
+// Disable policies and restore owned patches. Failed restoration leaves the group on whole ticks until all sites
+// can be restored by a later call.
 inline bool stopSmoothPatches(SmoothSites& sm, GroupLog log, CodeWriter write = writeCode) {
     ++sm.frame;
     bool ok = true;
@@ -2248,7 +2196,7 @@ inline bool stopSmoothPatches(SmoothSites& sm, GroupLog log, CodeWriter write = 
         }
         bool quiet = true;
         if (removeGroupSitesQuiet(sm, uint8_t(i), quiet, write, kRuntimeQuietAttempts)) {
-            if (gr.stuck) {   // every site of it is out now, so it can go back in
+            if (gr.stuck) {   // all sites restored; reinstallation is allowed unless failed
                 gr.stuck = false;
                 if (!gr.failed) gr.why.clear();
             }
@@ -2258,7 +2206,7 @@ inline bool stopSmoothPatches(SmoothSites& sm, GroupLog log, CodeWriter write = 
         if (!quiet) { logQuietMisses(sm, uint8_t(i), log, false); continue; }   // taking out; policy off, patches out later
         if (!gr.stuck) {
             gr.stuck = true;
-            // What the take-out found, at the first site it left in.
+            // Report the first site removal left patched.
             char found[200] = "a patch could not be taken back out";
             const GroupSpec& gs = kGroups[i];
             for (uint8_t k = 0; k < gs.siteCount; k++) {

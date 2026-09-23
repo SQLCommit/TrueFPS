@@ -68,10 +68,8 @@ bool callbackThreadSaid = false; // the one-time note when a callback runs off t
 void logLine(Ashita::LogLevel level, const char* text);
 std::string routineNames(const std::vector<const char*>& names);   // "a, b and c"
 std::string logPathText();
-// Ashita 4.30 runs queued commands on its own worker threads, but PluginManager enters one critical section around
-// HandleCommand, HandleIncomingPacket and Direct3D_Present (Ashita.dll 0x10182DBD, 0x101847F5, 0x101869F0), so a
-// command or packet callback never runs while the Present callback does. The first callback seen on another thread is
-// a log fact, said once.
+// Ashita 4.30 serializes command, packet and Present callbacks with the plugin-manager lock.
+// Log the first callback off the drawing thread.
 void noteCallbackThread(const char* what) {
     if (callbackThreadSaid || !drawThread) return;
     const DWORD here = GetCurrentThreadId();
@@ -150,9 +148,7 @@ bool moveRemoveLogged = false;   // the remove failure, said once: a different f
 bool smoothFallbackSaid = false;  // the "smooth mode unavailable" line has been said in chat
 truefps::SmoothSites smooth;     // smooth mode's code patches, by routine (smooth.h)
 size_t smoothFound = 0;          // routines whose code was found on this client build
-// A site another tool owns is left exactly as that tool set it, at resolve or when it takes the operand over later,
-// and is taken back when that tool puts the client's value back. The routine stays smooth either way, so each change
-// is a log fact, said once, and never a chat line.
+// Log ownership changes without chat notices; routines stay smooth while another tool owns an operand.
 bool siteNeutralSaid[truefps::kSiteCount] = {};
 uint32_t neutralSitesSaid = 0;
 void logNeutralSites() {
@@ -168,15 +164,14 @@ void logNeutralSites() {
                         double(truefps::floatFromBits(truefps::kSites[i].neutralBits)));
         else if (smooth.sites[i].patched)
             _snprintf_s(line, sizeof line, _TRUNCATE, "smooth mode: %s: taken back", truefps::kSites[i].name);
-        else   // an adopted site handed back while its routine was not running, or at unload: restored, not taken back
+        else   // handed back while inactive or unloading: restored without reapplying the patch
             _snprintf_s(line, sizeof line, _TRUNCATE, "smooth mode: %s: the other tool handed it back, and it is restored", truefps::kSites[i].name);
         logLine(Ashita::LogLevel::Info, line);
     }
 }
-// The factor copies the fast paths read are re-taken once a second (refreshConstantCopies). A constant another tool
-// retuned is a log fact, said once per change: the routine keeps running, so it is never a chat line.
+// Log changes to copied client constants, polled once per second by refreshConstantCopies.
 uint32_t siteConstantSaid[truefps::kSiteCount] = {};
-float springFarSaid = 0.0f;   // the eye loop's far-distance threshold, as last said (resolve's value is not a change)
+float springFarSaid = 0.0f;   // last logged eye-loop threshold; initialized at resolve
 uint32_t constantChangesSaid = 0;
 void logConstantCopies() {
     if (truefps::g_truefpsConstantChanges == constantChangesSaid) return;
@@ -197,9 +192,7 @@ void logConstantCopies() {
         logLine(Ashita::LogLevel::Info, line);
     }
 }
-// A recorded operand that could no longer be written back: TrueFPS's own slot is left in the game's code instead of
-// a dead address. Removal is retried every frame while the site is still in, so this is latched per site, as the
-// neutral-site lines are; the unload's own report says the changes are not all undone.
+// Keep our slot when the original operand is unsafe to restore. Warn once per site despite removal retries.
 bool siteUnsafeSaid[truefps::kSiteCount] = {};
 uint32_t unsafeOriginalsSaid = 0;
 void logUnsafeOperands() {
@@ -560,7 +553,7 @@ bool resolve(std::string& why) {
         stepSites[i].at = client.base + steps[i];
         std::memcpy(stepSites[i].original, image.data() + steps[i], 5);
         stepSites[i].pad = truefps::stepPadAt(stepSites[i].at);  // NOP padding after the ret
-        // Recorded here, outside any freeze: the install writes the pad only while it still holds these bytes.
+        // Snapshot before freezing threads; installation requires these bytes to remain unchanged.
         if (!truefps::recordPad(stepSites[i]))
             logLine(Ashita::LogLevel::Warn, "the padding after a game step accessor is not the game's own and is not TrueFPS's to claim: the cutscene speed-up and smooth mode will not start");
     }
@@ -626,12 +619,12 @@ bool resolve(std::string& why) {
         const uintptr_t accessors[2] = {stepSites[0].at, stepSites[1].at};
         smoothFound = truefps::resolveSmooth(view, accessors, 2, smooth);
         truefps::publishSmoothAddresses(smooth);
-        for (size_t i = 0; i < truefps::kSiteCount; i++) siteConstantSaid[i] = smooth.floatBits[i];   // what resolve found is not a change
+        for (size_t i = 0; i < truefps::kSiteCount; i++) siteConstantSaid[i] = smooth.floatBits[i];   // initialize the log baseline
         springFarSaid = smooth.springFar;
         if (truefps::g_truefpsCellPageFailed)
             logLine(Ashita::LogLevel::Warn, "smooth mode: the page for TrueFPS's persistent cells could not be reserved: the camera eye follow and actor render position routines stay on whole ticks");
         if (smooth.springFar > 0.0f) {
-            char threshold[160];   // not `far`: windef.h keeps that as an empty macro
+            char threshold[160];
             _snprintf_s(threshold, sizeof threshold, _TRUNCATE, "smooth mode: the camera eye loop's far-distance threshold is %g on this client build", double(smooth.springFar));
             logLine(Ashita::LogLevel::Info, threshold);
         }
@@ -752,8 +745,7 @@ void installLimiter() {
     }
 }
 
-// Before restoreTimer clears g.timer: whether the timer switched this load can still call into this module. The object
-// is read only while the app's timer slot still names it (timerOrphaned says why).
+// Check for retained callbacks before restoreTimer clears g.timer. A replaced timer may already be freed.
 void noteOrphanedTimer() {
     const uintptr_t timer = currentTimer();
     uintptr_t vtable = 0;
@@ -782,7 +774,6 @@ bool installStep() {
         raiseNotice(text, 0x44);
         smoothFallbackSaid = smoothOn;
         logLine(Ashita::LogLevel::Error, text.c_str());
-        // The chat line names the outcome; the log names which check refused it.
         if (why) logLine(Ashita::LogLevel::Error, (std::string("the game timing patch was refused: ") + why).c_str());
         return false;
     }
@@ -1049,7 +1040,7 @@ void logGroup(uint8_t i, const char* what) {
     const auto& gr = smooth.groups[i];
     if ((gr.failed || gr.retired || gr.stuck) && !routineSaid[i]) {
         routineSaid[i] = true;
-        // A routine stuck only on a take-out comes back once its patches are out, so it is not off for the session.
+        // Removal failures are retryable; failed or retired routines remain disabled.
         const char* when = gr.failed || gr.retired ? " is off for this session" : " is off for now";
         chat(("smooth mode: " + std::string(truefps::kGroups[i].name) + when + ". Details in " + logPathText() + ".").c_str(), 0x68);
     }
@@ -1061,8 +1052,7 @@ void logRetryPacing() {
     _snprintf_s(line, sizeof line, _TRUNCATE, "connection retry: %ld attempts paced", paced);
     logLine(Ashita::LogLevel::Info, line);
 }
-// A routine stuck on a take-out whose patches have all come out since: said once, at Info. A failed or retired routine
-// stays off whatever comes out, so it is not said for those.
+// Report recovery after removal succeeds, except for failed or retired routines.
 struct StuckBefore {
     bool was[truefps::kGroupCount] = {};
     StuckBefore() { for (uint8_t i = 0; i < truefps::kGroupCount; i++) was[i] = smooth.groups[i].stuck; }
@@ -1076,7 +1066,7 @@ bool removeSmoothPatches() {
     const StuckBefore stuckBefore;
     const bool out = truefps::stopSmoothPatches(smooth, &logGroup);
     stuckBefore.sayCleared("goes back in when smooth mode runs");
-    logSiteChanges();   // a removal can find another tool's value in a site and leave it there
+    logSiteChanges();   // removal may discover an externally owned operand
     logRetryPacing();
     return out;
 }
@@ -2178,8 +2168,7 @@ void panelOverlay(IGuiManager* g, float s) {
         g->SetNextItemWidth(w);
         if (g->SliderInt("##ovsize", &size, 6, 72, "%d px", ImGuiSliderFlags_AlwaysClamp)) { overlaySize = size; applyFontLook(); }
         if (g->IsItemDeactivatedAfterEdit()) panelRun(opOverlaySize(overlaySize));
-        // Balance disabled state inside the table, label included: the colour threshold, not this row, owns the
-        // counter's colour while it is on. Opened before the row, as the Thresholds row below opens its own.
+        // Disable both the label and picker while threshold colours are active; balance inside the table.
         g->BeginDisabled(overlayBands);
         row(g, "Colour", "Text colour; A is opacity. Click the swatch for a picker. Saved when you finish editing. The colour threshold below takes its place while it is on.");
         float col[4] = {float((overlayColor >> 16) & 0xFF) / 255.0f, float((overlayColor >> 8) & 0xFF) / 255.0f, float(overlayColor & 0xFF) / 255.0f, float((overlayColor >> 24) & 0xFF) / 255.0f};
@@ -2187,7 +2176,7 @@ void panelOverlay(IGuiManager* g, float s) {
         if (g->ColorEdit4("##ovcolour", col, ImGuiColorEditFlags_AlphaBar)) {
             const auto b = [](float v) { return uint32_t(std::lround((std::min)(1.0f, (std::max)(0.0f, v)) * 255.0f)); };
             overlayColor = (b(col[3]) << 24) | (b(col[0]) << 16) | (b(col[1]) << 8) | b(col[2]);
-            if (font) font->SetColor(overlayColor);   // the row previews itself while it is the colour in force
+            if (font) font->SetColor(overlayColor);   // preview before saving
         }
         if (g->IsItemDeactivatedAfterEdit()) panelRun(opOverlayColor(overlayColor));
         g->EndDisabled();
@@ -2491,7 +2480,7 @@ std::string stateText(double fps) {
     return line;
 }
 
-// "XX XX ... " for up to 16 bytes of code, as the unload and the diagnostics print them.
+// Format up to 16 bytes as "XX XX ... " for diagnostics.
 std::string hexBytes(const uint8_t* b, size_t n) {
     char out[16 * 3 + 1] = "";
     if (n > 16) n = 16;
@@ -2513,7 +2502,7 @@ void runDiag() {
         const char* state = gr.absent ? gr.why.c_str() : !gr.found ? "not found" : gr.retired ? "off (ran on another thread)" : gr.failed || gr.stuck ? "whole ticks" : gr.on ? "smooth" : "ready";
         body += "      routine " + std::string(truefps::kGroups[i].name) + ": " + state + (gr.why.empty() || gr.absent ? std::string() : " (" + gr.why + ")") + "\n";
     }
-    // Each site that is not as TrueFPS left it: what it is, and what its code holds now.
+    // Report sites whose current bytes differ from the expected state.
     for (const auto& site : smooth.sites) {
         if (!site.spec) continue;
         const uint8_t n = site.spec->length < 16 ? site.spec->length : uint8_t(16);
@@ -2695,8 +2684,7 @@ public:
         try {
             releaseNow();
         } catch (...) {
-            // Isolate cleanup steps so one failure does not skip the rest. The persistent cells come first: another
-            // tool may point the client's code back at one after this module is gone (no allocation here).
+            // Isolate cleanup failures. Restore persistent cells first; saved pointers can outlive the DLL.
             try { truefps::restorePersistentCells(); } catch (...) {}
             try { pinSelf(); } catch (...) {}
             try { logPinFailure(); } catch (...) {}
@@ -2712,8 +2700,7 @@ public:
     void releaseNow() {
         if (refused) return;
         auto& g = truefps::g;
-        // First of all: the persistent cells hold the client's own constant from here on, whether or not a site still
-        // names one. Another tool can write one of those addresses back long after this module is gone.
+        // Restore native constants even in unused cells; other tools may restore saved pointers after unload.
         truefps::restorePersistentCells();
         g.waiting = false;
         g.speed = 1.0f;
@@ -2726,11 +2713,11 @@ public:
         // Do not delete fonts off the drawing thread; that unload path retains the DLL.
         if (onDrawThread()) destroyFont();
         else if (font) logLine(Ashita::LogLevel::Warn, "unload: the fps counter is left on screen; it can only be taken down on the drawing thread");
-        const bool fontLeft = font != nullptr;   // nothing else takes it down: the off-thread chat below says so
+        const bool fontLeft = font != nullptr;
 
         // Restore patches only while other threads are outside the DLL and all patched spans.
         // Exclude our writers from range checks; no allocation while frozen.
-        // An adopted site counts: the other tool may have handed it back holding TrueFPS's own slot, to be restored.
+        // Include adopted sites: another tool may have returned our operand, which still needs restoring.
         const bool anything = codeInstalled || g.timer || truefps::anyJumpLeft(stepSites, 2) || moveSite.patched || moveSite.dirty || truefps::anySitePatched(smooth) ||
                               truefps::anyAdoptedSite(smooth);
         bool quiet = !anything, smoothOk = true, moveOk = true, stepOk = true, limiterOk = true;
@@ -2756,7 +2743,7 @@ public:
             truefps::CodeRange writes[kRanges];
             size_t w = 0;
             const auto addWrite = [&](uintptr_t at, size_t len) { if (at && w < kRanges) writes[w++] = truefps::CodeRange{at, at + len}; };
-            for (const auto& site : stepSites) addWrite(site.at, 5);   // the head only: the act swaps that back (removeJumps) and never writes the pad
+            for (const auto& site : stepSites) addWrite(site.at, 5);   // restore entry jumps only; pads remain intact
             if (moveSite.patched || moveSite.dirty) addWrite(moveSite.at, 5);
             if (codeInstalled) addWrite(loopSite, 6);
             w += truefps::unloadSiteRanges(smooth, writes + w, kRanges - w);
@@ -2776,18 +2763,15 @@ public:
                     // Check before restoreTimer clears g.timer.
                     noteOrphanedTimer();
                     limiterOk = !codeInstalled && truefps::restoreTimer(currentTimer());
-                    // Last, with every other thread held and the limiter's own patch out: no frame can put a paced
-                    // value back into the cells after this (allocation- and log-free, as this act requires).
+                    // Restore native constants after limiter cleanup, while threads remain suspended. No allocation or logging.
                     truefps::restorePersistentCells();
                 }, why, sizeof why, &truefps::g_truefpsStepInflight);
             }
         }
         const bool othersOk = smoothOk && moveOk && stepOk && limiterOk;
         const bool restored = quiet && othersOk && !keptPath1;
-        // A site another tool took over is not stuck and needs no pin - its cell outlives this module and holds the
-        // client's own constant - but a value is left as that tool set it, so the report must not say everything is
-        // undone. One or more: `anyAdoptedSite` does not count them, and the wording does not either. Read after the
-        // removal, which restored every adopted site the other tool had handed back.
+        // Check after removal has restored returned operands. Externally owned operands remain,
+        // but their persistent cells do not require pinning the DLL.
         const bool adoptedSlot = truefps::anyAdoptedSite(smooth);
         if (!quiet) {
             logLine(Ashita::LogLevel::Error, pagesFailed
@@ -2798,13 +2782,11 @@ public:
             if (keptPath1)
                 logLine(Ashita::LogLevel::Warn, "unload: remote-entity path 1 stays in (its routine ran on another thread, so a thread may be part-way through it); with the clock off it runs the game's own arithmetic, and TrueFPS stays in memory until the game closes");
             if (!othersOk) {
-                // The outcome only: what each smooth site left in holds, and why, is on its own line below.
                 char line[200];
                 _snprintf_s(line, sizeof line, _TRUNCATE, "unload: some of TrueFPS's changes could not be taken back out (smooth sites %s, movement %s, step %s, limiter %s); it stays in memory until the game closes",
                             smoothOk ? "ok" : "left", moveOk ? "ok" : "left", stepOk ? "ok" : "left", limiterOk ? "ok" : "left");
                 logLine(Ashita::LogLevel::Error, line);
-                // Each smooth site left in: its name, what it holds now (and where an operand there points) against what
-                // TrueFPS wrote and what it found.
+                // Compare retained sites with installed and original bytes.
                 for (const auto& site : smooth.sites) {
                     if (!site.spec || !site.patched) continue;
                     const uint8_t n = site.spec->length < 16 ? site.spec->length : uint8_t(16);
@@ -2844,7 +2826,7 @@ public:
         if (presentFailures) logLine(Ashita::LogLevel::Warn, ("frame callbacks that failed this session: " + std::to_string(presentFailures)).c_str());
         if (packetFailures) logLine(Ashita::LogLevel::Warn, ("packet callbacks that failed this session: " + std::to_string(packetFailures)).c_str());
         const bool diskStopped = disk.stop();
-        showDiskNotices();   // what that last flush wrote or could not write: no frame follows to show it
+        showDiskNotices();   // report the final flush before callbacks stop
         logLine(diskStopped ? Ashita::LogLevel::Info : Ashita::LogLevel::Warn,
                 (std::string(diskStopped ? "unloaded" : "unloaded; the settings writer was still busy and finishes by itself") + plog::runSuffix(run)).c_str());
         const bool logStopped = fileLog.stop();
@@ -2856,7 +2838,7 @@ public:
                               : offThread   ? (fontLeft ? "its changes are undone; it was unloaded from an unexpected thread, so it stays in memory until the game closes and the fps counter stays on screen."
                                                         : "its changes are undone; it was unloaded from an unexpected thread, so it stays in memory until the game closes.")
                                             : "its changes are undone; a file was still being written, so it stays in memory until the game closes.", 0x6A);
-        // Said whatever else was said above: a pin for an unrelated reason must not hide it.
+        // Report retained external values even when an unrelated condition pins the DLL.
         if (restored && adoptedSlot) chat("a value another tool set is left as that tool set it.", 0x6A);
         // Retain the timer while pinned code can still run.
         if (!pinned) truefps::closeHrTimer();
