@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2
+
+- **Full speed when locked on.** Walking at a locked-on target no longer slows near it at high frame rates: the
+  player's gravity now runs every frame, so the game no longer treats you as airborne between game ticks.
+
 ## v1.1
 
 - **Works with xicamera in either load order.** Loading xicamera after TrueFPS no longer fails with "failed to locate

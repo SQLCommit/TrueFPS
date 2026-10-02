@@ -20,7 +20,7 @@
 
 namespace {
 
-constexpr double pluginVersion = 1.1;
+constexpr double pluginVersion = 1.2;
 constexpr const char* kFontAlias = "__truefps_overlay";
 
 IAshitaCore* core = nullptr;

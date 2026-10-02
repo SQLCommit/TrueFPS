@@ -676,7 +676,7 @@ enum Group : uint8_t {
     GroupMovementDeadband, GroupMotionFade, GroupCameraGate, GroupNetIcon, GroupHistory, GroupObstruction, GroupZoomReturn,
     GroupLightBlend, GroupShadowDirection, GroupCastBar, GroupActorState, GroupWorldPhase, GroupTrails,
     GroupEventWalk, GroupEventMove, GroupEventTimedMove, GroupSoundGrace, GroupMouseRepeat, GroupHelpDesk, GroupConnectionRetry,
-    GroupActorCounters, GroupPreviewCamera, GroupWindGusts, GroupHoldBar, kGroupCount
+    GroupActorCounters, GroupPreviewCamera, GroupWindGusts, GroupHoldBar, GroupPlayerGravity, kGroupCount
 };
 static_assert(kGroupCount <= kMaxGroups, "g_truefpsGroupOn and g_truefpsGroupOffThread hold kMaxGroups groups");
 static_assert(GroupVisibility == kGroupVisibilityIndex, "limiter.h's kGroupVisibilityIndex names GroupVisibility");
@@ -834,10 +834,13 @@ inline float __cdecl smoothPolicyValue(uint8_t kind, uintptr_t esi) {
     case kPolicyEventMove: return eventMoveValue(esi);
     case kPolicyEventTimer: return g_truefpsEventStep;   // SMove's countdown: native steps, never the stall help
     case kPolicyNativeReal: return g_truefpsNativeRealStep;
+    case kPolicyMoveS: return g.moveReal ? float(g.frame.s) : float(g.frame.w);   // follows player movement
     default: return float(g.frame.w);
     }
 }
 
+// Player gravity step (0x0A5194).
+inline constexpr const char* kLocGravity = "E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8D 54 24 20 8D 84 24 8C 00 00 00 52 50 D9 5C 24 34";
 inline constexpr const char* kLocLookAt = "E8 ?? ?? ?? ?? 8D 84 24 A0 00 00 00 8D 4C 24 70";
 inline constexpr const char* kLocSoundGrace = "D9 86 E4 01 00 00 D8 25 ?? ?? ?? ?? D9 9E E4 01 00 00";
 // The asynchronous job table's walk (0x0f10f0). Call at + 0x12.
@@ -968,6 +971,9 @@ inline const SiteSpec kSites[] = {
 
     // The cloth wind gusts: float2Bits pins the decay's 0.01 (imm32 at + 0x3B); the context pins the routine's head.
     {"cloth wind gusts", 0x188aa6, kLocWindGust, 0, kCtxWindGust, -0x56, SiteKind::ReplaceCall, 10, 0, 0, 0x3B, kBits001, CallTarget::None, Global::None, 0, &windGustStub, nullptr, nullptr, 0},
+
+    // Gravity's per-frame walk gate.
+    {"player gravity walk gate", 0xa51f5, "D8 15 ?? ?? ?? ?? 83 C4 20 DF E0 25 00 41 00 00 75 15 D9 44 24 24 D8 D9", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits001, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF001, nullptr, 0},
 };
 // clang-format on
 inline constexpr size_t kSiteCount = sizeof(kSites) / sizeof(kSites[0]);
@@ -1065,6 +1071,8 @@ inline constexpr GroupSpec kGroups[kGroupCount] = {
     // The hold bar (holdtime, +0x1C): a float countdown that fills the bar every frame with S.
     {"hold bar", 0, 0, "E8 ?? ?? ?? ?? D8 6E 1C D9 56 1C D8 1D ?? ?? ?? ?? DF E0 F6 C4", 5, 0x12cbd4, {{0x12cbd4, kPolicyS, "D8 6E ?? D9 56 ??"}}, 1, true,
      "6D 65 6E 75 20 20 20 20 68 6F 6C 64 74 69 6D 65", "hold-time window", "not in this client (normal on HorizonXI; retail clients have it)"},
+    // Per-frame gravity keeps lock-on grounded.
+    {"player gravity", 58, 1, kLocGravity, 0, 0xa5194, {{0xa5199, kPolicyMoveS, "D8 0D ?? ?? ?? ?? 8D 54 24 20"}}, 1},
 };
 // Every group's sites lie inside kSites: a row appended to one table and not the other fails here, not at resolve.
 constexpr bool groupSitesInRange() {
