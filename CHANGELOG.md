@@ -2,8 +2,8 @@
 
 ## v1.2
 
-- **Full speed when locked on.** Walking at a locked-on target no longer slows near it at high frame rates: the
-  player's gravity now runs every frame, so the game no longer treats you as airborne between game ticks.
+- **Full speed when locked on.** Running toward a locked-on target under certain conditions is no longer slower.
+- **Effect sounds play in full.** Sounds like the casting chant no longer cut off early.
 
 ## v1.1
 

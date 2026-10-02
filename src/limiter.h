@@ -210,7 +210,7 @@ inline FrameValues nextFrame(double& carry, float realTicks, float speed) {
 // Sorted entries apply only while their group is enabled.
 enum : uint8_t { kPolicyW = 0, kPolicyS = 1, kPolicyN = 2, kPolicyReset = 3, kPolicyEntArrive = 4, kPolicyEntDec = 5, kPolicyEntRot = 6, kPolicyTrail = 7,
                  kPolicyEventMove = 8, kPolicyNativeReal = 9, kPolicyEventTimer = 10,
-                 kPolicyMoveS = 11 };
+                 kPolicyMoveS = 11, kPolicyEffects = 12 };
 inline float __cdecl smoothPolicyValue(uint8_t kind, uintptr_t esi);   // smooth.h; esi = the caller's ESI
 struct PolicyEntry { uintptr_t ret = 0; uint8_t kind = kPolicyW; uint8_t group = 0; };
 inline constexpr size_t kMaxPolicy = 80, kMaxGroups = 48;

@@ -676,7 +676,7 @@ enum Group : uint8_t {
     GroupMovementDeadband, GroupMotionFade, GroupCameraGate, GroupNetIcon, GroupHistory, GroupObstruction, GroupZoomReturn,
     GroupLightBlend, GroupShadowDirection, GroupCastBar, GroupActorState, GroupWorldPhase, GroupTrails,
     GroupEventWalk, GroupEventMove, GroupEventTimedMove, GroupSoundGrace, GroupMouseRepeat, GroupHelpDesk, GroupConnectionRetry,
-    GroupActorCounters, GroupPreviewCamera, GroupWindGusts, GroupHoldBar, GroupPlayerGravity, kGroupCount
+    GroupActorCounters, GroupPreviewCamera, GroupWindGusts, GroupHoldBar, GroupPlayerGravity, GroupEffectSound, GroupEffectSkeleton, kGroupCount
 };
 static_assert(kGroupCount <= kMaxGroups, "g_truefpsGroupOn and g_truefpsGroupOffThread hold kMaxGroups groups");
 static_assert(GroupVisibility == kGroupVisibilityIndex, "limiter.h's kGroupVisibilityIndex names GroupVisibility");
@@ -824,6 +824,10 @@ inline float eventMoveValue(uintptr_t runner) {
     return value;
 }
 
+// Margin covers float rounding.
+inline float effectsFloorStep() {
+    return g_truefpsGroupOn[GroupEffects] ? float(g.frame.s) + 1.0f / 1024.0f : float(g.frame.w);
+}
 inline float __cdecl smoothPolicyValue(uint8_t kind, uintptr_t esi) {
     switch (kind) {
     case kPolicyReset: return resetIterations();
@@ -835,10 +839,14 @@ inline float __cdecl smoothPolicyValue(uint8_t kind, uintptr_t esi) {
     case kPolicyEventTimer: return g_truefpsEventStep;   // SMove's countdown: native steps, never the stall help
     case kPolicyNativeReal: return g_truefpsNativeRealStep;
     case kPolicyMoveS: return g.moveReal ? float(g.frame.s) : float(g.frame.w);   // follows player movement
+    case kPolicyEffects: return effectsFloorStep();
     default: return float(g.frame.w);
     }
 }
 
+// Effect lifetime floors.
+inline constexpr const char* kLocSoundFloor = "E8 ?? ?? ?? ?? D8 AE 10 01 00 00 D8 1D ?? ?? ?? ?? DF E0 F6 C4 05 7A 11 E8";
+inline constexpr const char* kLocSkeletonFloor = "E8 ?? ?? ?? ?? D8 AB 10 01 00 00 D8 1D ?? ?? ?? ?? DF E0 F6 C4 05 7A 11 E8";
 // Player gravity step (0x0A5194).
 inline constexpr const char* kLocGravity = "E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8D 54 24 20 8D 84 24 8C 00 00 00 52 50 D9 5C 24 34";
 inline constexpr const char* kLocLookAt = "E8 ?? ?? ?? ?? 8D 84 24 A0 00 00 00 8D 4C 24 70";
@@ -1073,6 +1081,9 @@ inline constexpr GroupSpec kGroups[kGroupCount] = {
      "6D 65 6E 75 20 20 20 20 68 6F 6C 64 74 69 6D 65", "hold-time window", "not in this client (normal on HorizonXI; retail clients have it)"},
     // Per-frame gravity keeps lock-on grounded.
     {"player gravity", 58, 1, kLocGravity, 0, 0xa5194, {{0xa5199, kPolicyMoveS, "D8 0D ?? ?? ?? ?? 8D 54 24 20"}}, 1},
+    // Floors use the countdown's step.
+    {"effects sound lifetime", 0, 0, kLocSoundFloor, 0, 0x368b6, {{0x368bb, kPolicyEffects, "D8 AE 10 01 00 00"}, {0x368d3, kPolicyEffects, "D8 05 ?? ?? ?? ?? D9 9E 10 01 00 00"}}, 2},
+    {"effects skeleton lifetime", 0, 0, kLocSkeletonFloor, 0, 0x478bf, {{0x478c4, kPolicyEffects, "D8 AB 10 01 00 00"}, {0x478dc, kPolicyEffects, "D8 05 ?? ?? ?? ?? D9 9B 10 01 00 00"}}, 2},
 };
 // Every group's sites lie inside kSites: a row appended to one table and not the other fails here, not at resolve.
 constexpr bool groupSitesInRange() {
