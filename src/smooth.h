@@ -15,6 +15,8 @@ inline uintptr_t g_truefpsFrameCounter = 0;    // client 0x014d50: the frame cou
 inline uintptr_t g_truefpsNetIcon = 0;         // client 0x2012d0: the network activity icon's phase/sprite function
 inline uintptr_t g_truefpsHistoryWriter = 0;   // client 0x1e320: the camera's collision recovery history writer
 inline uintptr_t g_truefpsSegmentTest = 0;     // client 0x1815b0: the world segment test (thunk into 0x169140)
+inline uintptr_t g_truefpsGroundSweep = 0;     // client 0x181a10: the ground sweep
+inline float g_truefpsGroundReach = 1.0f;      // next ground sweep's length factor
 inline uintptr_t g_truefpsJobWalker = 0;       // client 0x0f1160: one visit to one asynchronous job record
 inline uintptr_t g_truefpsRecoveryHold = 0;    // client global 0x456d74: the camera's recovery hold
 inline uintptr_t g_truefpsTrailTail = 0;       // client 0x1c1e8: the trail update's draw-submit tail
@@ -496,6 +498,32 @@ __declspec(naked) inline void obstructionStub() {
     }
 }
 
+// Ground sweep: native reach when grounded.
+inline uint32_t __fastcall groundSweep(void* world, int /*edx*/, float* from, float* to, float* out) {
+    using Sweep = uint32_t(__fastcall*)(void*, int, float*, float*, float*);
+    const Sweep original = reinterpret_cast<Sweep>(g_truefpsGroundSweep);
+    const float k = g_truefpsGroundReach;
+    g_truefpsGroundReach = 1.0f;
+    const float drop = to[1] - from[1];
+    if (!(k > 1.0f) || !(drop > 0.0f)) return original(world, 0, from, to, out);
+    const float saved = to[1];
+    to[1] = from[1] + drop * k;
+    const uint32_t hit = original(world, 0, from, to, out);
+    if ((hit & 0xFF) == 0) { to[1] = saved; out[0] = to[0]; out[1] = saved; out[2] = to[2]; }   // miss: normal drop
+    return hit;
+}
+__declspec(naked) inline void groundSweepStub() {
+    __asm {
+        lock inc dword ptr [g_truefpsStepInflight]
+        push dword ptr [esp + 12]      // out
+        push dword ptr [esp + 12]      // to
+        push dword ptr [esp + 12]      // from
+        call groundSweep               // ecx = world
+        lock dec dword ptr [g_truefpsStepInflight]
+        ret 12
+    }
+}
+
 // Weapon trails carry ticks and update/age only on native quanta (2 ticks); otherwise jump
 // to draw tail 0x1c1e8. Step call 0x1bc9c; aging helper 0x1c260.
 struct TrailClock {
@@ -629,7 +657,7 @@ enum class SiteKind : uint8_t {
     Byte,          // first byte -> `newByte`. Atomic.
     Disp8,         // `7E disp8` (jle): the displacement -> newByte, the original checked against float2Bits. Atomic.
 };
-enum class CallTarget : uint8_t { None, Scale, ScaleOut, StepAccessor, FrameCounter, NetIcon, HistoryWriter, SegmentTest, TrailStep, JobWalker };
+enum class CallTarget : uint8_t { None, Scale, ScaleOut, StepAccessor, FrameCounter, NetIcon, HistoryWriter, SegmentTest, TrailStep, JobWalker, GroundSweep };
 enum class Global : uint8_t { None, D8C, D88, Effects };
 // Exact constants identify a site; banded camera factors accept retuning and use the value found.
 enum class FloatBand : uint8_t { Exact, UnitPositive, UnitNegative };
@@ -824,6 +852,13 @@ inline float eventMoveValue(uintptr_t runner) {
     return value;
 }
 
+// Gravity step; arms the ground sweep's reach.
+inline float gravityStep(uintptr_t actor) {
+    const float s = g.moveReal ? float(g.frame.s) : float(g.frame.w);
+    const bool grounded = actor > 0x10000 && *reinterpret_cast<const float*>(actor + 0xF4) == 0.0f;   // fall was reset
+    g_truefpsGroundReach = (g.moveReal && grounded && s > 0.0f && s < float(kNativeStep)) ? float(kNativeStep) / s : 1.0f;
+    return s;
+}
 // Margin covers float rounding.
 inline float effectsFloorStep() {
     return g_truefpsGroupOn[GroupEffects] ? float(g.frame.s) + 1.0f / 1024.0f : float(g.frame.w);
@@ -838,7 +873,7 @@ inline float __cdecl smoothPolicyValue(uint8_t kind, uintptr_t esi) {
     case kPolicyEventMove: return eventMoveValue(esi);
     case kPolicyEventTimer: return g_truefpsEventStep;   // SMove's countdown: native steps, never the stall help
     case kPolicyNativeReal: return g_truefpsNativeRealStep;
-    case kPolicyMoveS: return g.moveReal ? float(g.frame.s) : float(g.frame.w);   // follows player movement
+    case kPolicyMoveS: return gravityStep(esi);
     case kPolicyEffects: return effectsFloorStep();
     default: return float(g.frame.w);
     }
@@ -982,6 +1017,7 @@ inline const SiteSpec kSites[] = {
 
     // Gravity's per-frame walk gate.
     {"player gravity walk gate", 0xa51f5, "D8 15 ?? ?? ?? ?? 83 C4 20 DF E0 25 00 41 00 00 75 15 D9 44 24 24 D8 D9", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits001, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF001, nullptr, 0},
+    {"player gravity ground sweep", 0xa52a1, "51 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 85 C0 74 07 C6 86 E0 05 00 00 01", 7, nullptr, 0, SiteKind::CallToStub, 5, 0, 0, 0, 0, CallTarget::GroundSweep, Global::None, 0, &groundSweepStub, nullptr, nullptr, 0},
 };
 // clang-format on
 inline constexpr size_t kSiteCount = sizeof(kSites) / sizeof(kSites[0]);
@@ -1080,7 +1116,7 @@ inline constexpr GroupSpec kGroups[kGroupCount] = {
     {"hold bar", 0, 0, "E8 ?? ?? ?? ?? D8 6E 1C D9 56 1C D8 1D ?? ?? ?? ?? DF E0 F6 C4", 5, 0x12cbd4, {{0x12cbd4, kPolicyS, "D8 6E ?? D9 56 ??"}}, 1, true,
      "6D 65 6E 75 20 20 20 20 68 6F 6C 64 74 69 6D 65", "hold-time window", "not in this client (normal on HorizonXI; retail clients have it)"},
     // Per-frame gravity keeps lock-on grounded.
-    {"player gravity", 58, 1, kLocGravity, 0, 0xa5194, {{0xa5199, kPolicyMoveS, "D8 0D ?? ?? ?? ?? 8D 54 24 20"}}, 1},
+    {"player gravity", 58, 2, kLocGravity, 0, 0xa5194, {{0xa5199, kPolicyMoveS, "D8 0D ?? ?? ?? ?? 8D 54 24 20"}}, 1},
     // Floors use the countdown's step.
     {"effects sound lifetime", 0, 0, kLocSoundFloor, 0, 0x368b6, {{0x368bb, kPolicyEffects, "D8 AE 10 01 00 00"}, {0x368d3, kPolicyEffects, "D8 05 ?? ?? ?? ?? D9 9E 10 01 00 00"}}, 2},
     {"effects skeleton lifetime", 0, 0, kLocSkeletonFloor, 0, 0x478bf, {{0x478c4, kPolicyEffects, "D8 AB 10 01 00 00"}, {0x478dc, kPolicyEffects, "D8 05 ?? ?? ?? ?? D9 9B 10 01 00 00"}}, 2},
@@ -1137,6 +1173,7 @@ inline constexpr const char* kJobWalkerBytes =
     "56 08 89 5E 28 52 89 5E 24 89 5E 20 E8 ?? ?? ?? ?? 83 C4 04 8B C7 5F 5E 5B C3";
 // The world segment test thunk 0x1815b0: `add ecx,178h; jmp 0x169140`.
 inline constexpr const char* kSegmentTestBytes = "81 C1 78 01 00 00 E9";
+inline constexpr const char* kGroundSweepBytes = "8B 44 24 0C 8B 54 24 08 50 8B 44 24 08 52 50 81 C1 78 01 00 00 E8";
 // Validate history writer 0x1E320: three shifts, oldest +0x24, count +0x34.
 // Wildcard helpers and the sample-distance address.
 inline constexpr const char* kHistoryWriterBytes =
@@ -1184,7 +1221,7 @@ struct SmoothSites {
     uint32_t frame = 0;          // runSmoothPatches / stopSmoothPatches calls, for the back-off
     PolicyEntry entries[kMaxPolicy];
     size_t entryCount = 0;
-    uintptr_t helperScale = 0, helperScaleOut = 0, stepAccessor = 0, d8c = 0, d88 = 0, effects = 0, frameCounter = 0, netIcon = 0, historyWriter = 0, segmentTest = 0, recoveryHold = 0, trailTail = 0, jobWalker = 0;
+    uintptr_t helperScale = 0, helperScaleOut = 0, stepAccessor = 0, d8c = 0, d88 = 0, effects = 0, frameCounter = 0, netIcon = 0, historyWriter = 0, segmentTest = 0, groundSweep = 0, recoveryHold = 0, trailTail = 0, jobWalker = 0;
     uintptr_t eb0Ret = 0;
     CodeRange path1Calls[2] = {};         // what path 1 calls between its sites: the step accessor, __ftol
     uint32_t floatBits[kSiteCount] = {};  // the verified constant per site (fast-path copies)
@@ -1316,6 +1353,12 @@ inline bool locateSiteFrom(const std::vector<size_t>& hits, const SiteSpec& spec
             if (!hold || !img.has(hold, 4)) { why = std::string(spec.name) + ": the hit branch is not the expected recovery test"; return false; }
             sm.segmentTest = target;
             sm.recoveryHold = hold;
+        } else if (spec.target == CallTarget::GroundSweep) {
+            const auto pat = parsePattern(kGroundSweepBytes);
+            if (!img.has(target, pat.size()) || !matchesAt(img.data, img.size, target - img.base, pat) || (sm.groundSweep && sm.groundSweep != target)) {
+                why = std::string(spec.name) + " does not call the ground sweep"; return false;
+            }
+            sm.groundSweep = target;
         } else if (spec.target == CallTarget::HistoryWriter) {
             const auto pat = parsePattern(kHistoryWriterBytes);
             if (!img.has(target, pat.size()) || !matchesAt(img.data, img.size, target - img.base, pat) || (sm.historyWriter && sm.historyWriter != target)) {
@@ -1506,6 +1549,7 @@ inline void publishSmoothAddresses(const SmoothSites& sm) {
     g_truefpsNetIcon = sm.netIcon;
     g_truefpsHistoryWriter = sm.historyWriter;
     g_truefpsSegmentTest = sm.segmentTest;
+    g_truefpsGroundSweep = sm.groundSweep;
     g_truefpsJobWalker = sm.jobWalker;
     g_truefpsRecoveryHold = sm.recoveryHold;
     g_truefpsTrailTail = sm.trailTail;
