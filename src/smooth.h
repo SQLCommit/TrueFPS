@@ -506,11 +506,16 @@ inline uint32_t __fastcall groundSweep(void* world, int /*edx*/, float* from, fl
     g_truefpsGroundReach = 1.0f;
     const float drop = to[1] - from[1];
     if (!(k > 1.0f) || !(drop > 0.0f)) return original(world, 0, from, to, out);
-    const float saved = to[1];
-    to[1] = from[1] + drop * k;
     const uint32_t hit = original(world, 0, from, to, out);
-    if ((hit & 0xFF) == 0) { to[1] = saved; out[0] = to[0]; out[1] = saved; out[2] = to[2]; }   // miss: normal drop
-    return hit;
+    if (hit & 0xFF) return hit;   // native reach found ground
+    const float saved = to[1];
+    float deep[3] = {};
+    to[1] = from[1] + drop * k;
+    const uint32_t deepHit = original(world, 0, from, to, deep);
+    to[1] = saved;
+    if ((deepHit & 0xFF) == 0) return hit;
+    out[0] = to[0]; out[1] = deep[1]; out[2] = to[2];   // height only, no shove
+    return deepHit;
 }
 __declspec(naked) inline void groundSweepStub() {
     __asm {
@@ -704,7 +709,7 @@ enum Group : uint8_t {
     GroupMovementDeadband, GroupMotionFade, GroupCameraGate, GroupNetIcon, GroupHistory, GroupObstruction, GroupZoomReturn,
     GroupLightBlend, GroupShadowDirection, GroupCastBar, GroupActorState, GroupWorldPhase, GroupTrails,
     GroupEventWalk, GroupEventMove, GroupEventTimedMove, GroupSoundGrace, GroupMouseRepeat, GroupHelpDesk, GroupConnectionRetry,
-    GroupActorCounters, GroupPreviewCamera, GroupWindGusts, GroupHoldBar, GroupPlayerGravity, GroupEffectSound, GroupEffectSkeleton, kGroupCount
+    GroupActorCounters, GroupPreviewCamera, GroupWindGusts, GroupHoldBar, GroupPlayerGravity, GroupEffectSound, GroupEffectSkeleton, GroupMovedFlag, GroupGroundSweep, kGroupCount
 };
 static_assert(kGroupCount <= kMaxGroups, "g_truefpsGroupOn and g_truefpsGroupOffThread hold kMaxGroups groups");
 static_assert(GroupVisibility == kGroupVisibilityIndex, "limiter.h's kGroupVisibilityIndex names GroupVisibility");
@@ -879,6 +884,7 @@ inline float __cdecl smoothPolicyValue(uint8_t kind, uintptr_t esi) {
     }
 }
 
+inline constexpr const char* kLocMoved = "D8 1D ?? ?? ?? ?? DF E0 25 00 41 00 00 75 09 C6 86 F8 00 00 00 01";
 // Effect lifetime floors.
 inline constexpr const char* kLocSoundFloor = "E8 ?? ?? ?? ?? D8 AE 10 01 00 00 D8 1D ?? ?? ?? ?? DF E0 F6 C4 05 7A 11 E8";
 inline constexpr const char* kLocSkeletonFloor = "E8 ?? ?? ?? ?? D8 AB 10 01 00 00 D8 1D ?? ?? ?? ?? DF E0 F6 C4 05 7A 11 E8";
@@ -1018,6 +1024,7 @@ inline const SiteSpec kSites[] = {
     // Gravity's per-frame walk gate.
     {"player gravity walk gate", 0xa51f5, "D8 15 ?? ?? ?? ?? 83 C4 20 DF E0 25 00 41 00 00 75 15 D9 44 24 24 D8 D9", 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits001, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF001, nullptr, 0},
     {"player gravity ground sweep", 0xa52a1, "51 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 85 C0 74 07 C6 86 E0 05 00 00 01", 7, nullptr, 0, SiteKind::CallToStub, 5, 0, 0, 0, 0, CallTarget::GroundSweep, Global::None, 0, &groundSweepStub, nullptr, nullptr, 0},
+    {"player moved flag", 0xa5ba9, kLocMoved, 0, nullptr, 0, SiteKind::SwapImm, 6, 2, kBits002, 0, 0, CallTarget::None, Global::None, 0, nullptr, &g_truefpsF002, nullptr, 0},
 };
 // clang-format on
 inline constexpr size_t kSiteCount = sizeof(kSites) / sizeof(kSites[0]);
@@ -1116,10 +1123,14 @@ inline constexpr GroupSpec kGroups[kGroupCount] = {
     {"hold bar", 0, 0, "E8 ?? ?? ?? ?? D8 6E 1C D9 56 1C D8 1D ?? ?? ?? ?? DF E0 F6 C4", 5, 0x12cbd4, {{0x12cbd4, kPolicyS, "D8 6E ?? D9 56 ??"}}, 1, true,
      "6D 65 6E 75 20 20 20 20 68 6F 6C 64 74 69 6D 65", "hold-time window", "not in this client (normal on HorizonXI; retail clients have it)"},
     // Per-frame gravity keeps lock-on grounded.
-    {"player gravity", 58, 2, kLocGravity, 0, 0xa5194, {{0xa5199, kPolicyMoveS, "D8 0D ?? ?? ?? ?? 8D 54 24 20"}}, 1},
+    {"player gravity", 58, 1, kLocGravity, 0, 0xa5194, {{0xa5199, kPolicyMoveS, "D8 0D ?? ?? ?? ?? 8D 54 24 20"}}, 1},
     // Floors use the countdown's step.
     {"effects sound lifetime", 0, 0, kLocSoundFloor, 0, 0x368b6, {{0x368bb, kPolicyEffects, "D8 AE 10 01 00 00"}, {0x368d3, kPolicyEffects, "D8 05 ?? ?? ?? ?? D9 9E 10 01 00 00"}}, 2},
     {"effects skeleton lifetime", 0, 0, kLocSkeletonFloor, 0, 0x478bf, {{0x478c4, kPolicyEffects, "D8 AB 10 01 00 00"}, {0x478dc, kPolicyEffects, "D8 05 ?? ?? ?? ?? D9 9B 10 01 00 00"}}, 2},
+    // Per-frame moved gate, scaled.
+    {"player moved flag", 60, 1, kLocMoved, 0, 0xa5ba9, {}, 0},
+    // Native-reach ground sweep.
+    {"player ground sweep", 59, 1, "51 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 85 C0 74 07 C6 86 E0 05 00 00 01", 7, 0xa52a1, {}, 0},
 };
 // Every group's sites lie inside kSites: a row appended to one table and not the other fails here, not at resolve.
 constexpr bool groupSitesInRange() {

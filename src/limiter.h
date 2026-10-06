@@ -116,7 +116,7 @@ using ResetFn = void(__fastcall*)(void* self, void* edx);
 // Smooth-mode clock terms: s = visual step (<= 20 ticks, times the cutscene speed); w = whole ticks, rest carried (phiBefore = prior carry);
 // n = ceil(s / 1.05), sig = s / n; F*, SIGMA, Q075, P025 = per-iteration factors (1 - (1 - k)^sig; Q075/P025 = 0.75^(s/2)).
 inline constexpr uint32_t kBits025 = 0x3E800000, kBits0125 = 0x3E000000, kBits005 = 0x3D4CCCCD, kBits05 = 0x3F000000,
-                          kBits075 = 0x3F400000, kBits1 = 0x3F800000, kBitsM1 = 0xBF800000, kBits001 = 0x3C23D70A, kBits00001 = 0x38D1B717,
+                          kBits075 = 0x3F400000, kBits1 = 0x3F800000, kBitsM1 = 0xBF800000, kBits001 = 0x3C23D70A, kBits002 = 0x3CA3D70A, kBits00001 = 0x38D1B717,
                           kBits04 = 0x3ECCCCCD, kBits004 = 0x3D23D70A, kBitsSixDeg = 0x3DD67750;
 inline float floatFromBits(uint32_t bits) { float f = 0.0f; std::memcpy(&f, &bits, 4); return f; }
 // Native 30: the game's default 30 fps, N ticks a frame.
@@ -146,6 +146,7 @@ struct FrameValues {
     float f025 = 0.25f, f0125 = 0.125f, f05 = 0.5f, sigma = 1.0f, q075 = 0.75f, p025 = 0.25f;
 // The movement deadband, 0.01 units per frame scaled to the step (0.01 * walkScale, never above the client's own 0.01).
     float f001 = floatFromBits(kBits001);
+    float f002 = floatFromBits(kBits002);   // the moved-flag gate
     float f00001 = floatFromBits(kBits00001);   // the 0.0001 displacement gates
 // The camera's gates: 0.01 for the collision pass, 0.0001 for a tiny net move; both 0 above 30 fps.
     float fc001 = floatFromBits(kBits001), fc00001 = floatFromBits(kBits00001);
@@ -199,6 +200,7 @@ inline FrameValues nextFrame(double& carry, float realTicks, float speed) {
     const double walkScale = v.s < native ? v.s / native : 1.0;
     if (walkScale != 1.0) {
         v.f001 = float(floatFromBits(kBits001) * walkScale);
+        v.f002 = float(floatFromBits(kBits002) * walkScale);
         v.f00001 = float(floatFromBits(kBits00001) * walkScale);
     }
     v.fsnd = float((std::min)(1.0, real / kNativeStep));
@@ -316,6 +318,7 @@ inline uint32_t g_truefpsLookAtKBits = kBits025, g_truefpsRecenterKBits = kBits0
 inline float g_truefpsLookAtK = 0.25f, g_truefpsRecenterK = floatFromBits(kBits005), g_truefpsResetK = 0.125f, g_truefpsFirstPersonK = 0.125f;
 inline float g_truefpsSigma = 1.0f, g_truefpsQ075 = 0.75f, g_truefpsP025 = 0.25f;
 inline float g_truefpsF001 = floatFromBits(kBits001);
+inline float g_truefpsF002 = floatFromBits(kBits002);
 inline float g_truefpsF00001 = floatFromBits(kBits00001);
 inline float g_truefpsFC001 = floatFromBits(kBits001), g_truefpsFC00001 = floatFromBits(kBits00001);
 inline float g_truefpsFZ025 = 0.25f, g_truefpsFZLow = -1.0f, g_truefpsFZHigh = 1.0f;
@@ -473,7 +476,7 @@ inline void publishFrame(const FrameValues& v, bool smooth) {
     g.frame = v;
     g_truefpsOne = v.one ? 1 : 0;
     g_truefpsF025 = v.f025; g_truefpsF0125 = v.f0125; g_truefpsF05 = v.f05;
-    g_truefpsSigma = v.sigma; g_truefpsQ075 = v.q075; g_truefpsP025 = v.p025; g_truefpsF001 = v.f001; g_truefpsF00001 = v.f00001; g_truefpsFC001 = v.fc001; g_truefpsFC00001 = v.fc00001;
+    g_truefpsSigma = v.sigma; g_truefpsQ075 = v.q075; g_truefpsP025 = v.p025; g_truefpsF001 = v.f001; g_truefpsF002 = v.f002; g_truefpsF00001 = v.f00001; g_truefpsFC001 = v.fc001; g_truefpsFC00001 = v.fc00001;
     g_truefpsFZ025 = v.fz025; g_truefpsFZLow = v.fzLow; g_truefpsFZHigh = v.fzHigh;
     g_truefpsFL04 = v.fl04; g_truefpsFL004 = v.fl004; g_truefpsFSound = v.fsnd;
     g_truefpsSig = v.one ? 1.0 : v.sig;

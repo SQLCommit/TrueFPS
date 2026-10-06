@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3
+
+Both fixes are for very high frame rates (300+ fps).
+
+- **Others see you run smoothly.** Other players no longer see you stutter-step when you walk or run.
+- **Stairs and cliffs climb normally.** Climbing steps no longer pushes you back.
+
 ## v1.2
 
 - **Full speed when locked on.** Running toward a locked-on target under certain conditions is no longer slower.
